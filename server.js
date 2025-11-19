@@ -4,7 +4,6 @@ import path from "path";
 import cors from "cors";
 import OpenAI from "openai"; // MUDANÇA: Usando OpenAI agora
 import knex from "knex";
-import "sqlite3";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
