@@ -35,20 +35,31 @@ git push origin main
 
 ## 🚀 Deploy no Render
 
-### 1. Criar Web Service
+### 1. Criar Banco de Dados PostgreSQL
 - [ ] Acessar https://render.com/dashboard
+- [ ] Clicar em "New +" → "PostgreSQL"
+- [ ] **Name**: `kiosk-db`
+- [ ] **Database**: `kiosk`
+- [ ] **User**: `kiosk_user`
+- [ ] **Region**: Oregon (ou sua preferência)
+- [ ] **Instance Type**: Free
+- [ ] Clicar em "Create Database"
+- [ ] Aguardar criação (1-2 minutos)
+- [ ] Copiar a **Internal Database URL** (começando com `postgresql://`)
+
+### 2. Criar Web Service
 - [ ] Clicar em "New +" → "Web Service"
 - [ ] Conectar repositório GitHub
 - [ ] Selecionar branch `main`
 
-### 2. Configurar Serviço
+### 3. Configurar Serviço
 - [ ] **Name**: `kiosk-backend` (ou seu nome)
 - [ ] **Runtime**: Node
 - [ ] **Build Command**: `npm install`
 - [ ] **Start Command**: `npm start`
 - [ ] **Instance Type**: Free (ou pago)
 
-### 3. Adicionar Variáveis de Ambiente
+### 4. Adicionar Variáveis de Ambiente
 
 | Variável | Valor | Status |
 |----------|-------|--------|
@@ -56,11 +67,15 @@ git push origin main
 | `PORT` | `3001` | [ ] |
 | `OPENAI_API_KEY` | `sk-...` (sua chave) | [ ] |
 | `FRONTEND_URL` | `https://seu-app.vercel.app` | [ ] |
+| `DATABASE_URL` | *Do banco PostgreSQL criado* | [ ] |
 
-### 4. Deploy
+> **DATABASE_URL**: Cole a Internal Database URL do banco PostgreSQL que você criou no passo 1, ou use o seletor para conectar ao banco `kiosk-db`.
+
+### 5. Deploy
 - [ ] Clicar em "Create Web Service"
 - [ ] Aguardar build (2-5 minutos)
 - [ ] Verificar logs de deploy
+- [ ] Verificar se conectou ao PostgreSQL (mensagem no log)
 - [ ] Copiar URL do backend (ex: `https://kiosk-backend.onrender.com`)
 
 ---
@@ -121,12 +136,19 @@ git push origin main
 2. Primeira requisição pode levar ~30 segundos
 3. Considerar upgrade para plano pago ou usar serviço de ping
 
-### ❌ Dados perdidos após restart
+### ❌ Erro de conexão com banco de dados
 **Solução:**
-1. SQLite no Render Free é efêmero
-2. Para produção, migrar para PostgreSQL:
-   - Render oferece PostgreSQL free
-   - Atualizar Knex config no `server.js`
+1. Verificar se o PostgreSQL foi criado e está ativo no Render
+2. Confirmar que `DATABASE_URL` está configurada corretamente
+3. Verificar logs do banco no Render Dashboard
+4. Certifique-se que Web Service e Database estão na mesma região
+5. Verificar se a Internal Database URL foi usada (não a External)
+
+### ❌ Banco de dados vazio após deploy
+**Solução:**
+1. Normal no primeiro deploy - tabelas são criadas automaticamente
+2. Dados do menu são carregados do `menu.json` na primeira inicialização
+3. Verificar logs para confirmar que `initDatabase()` foi executado
 
 ---
 

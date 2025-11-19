@@ -23,14 +23,28 @@ if (!process.env.OPENAI_API_KEY) {
   console.log("✅ OpenAI (GPT-4o-mini) configurada com sucesso.");
 }
 
-// --- CONFIGURAÇÃO E CONEXÃO COM O BANCO DE DADOS (Knex + SQLite) ---
-const db = knex({
-  client: "sqlite3",
-  connection: {
-    filename: path.join(process.cwd(), "data", "kiosk.sqlite"),
-  },
-  useNullAsDefault: true,
-});
+// --- CONFIGURAÇÃO DO BANCO DE DADOS (Híbrido: Postgres em Prod, SQLite Local) ---
+const dbConfig = process.env.DATABASE_URL
+  ? {
+      client: "pg",
+      connection: {
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false }, // Necessário para Render
+      },
+    }
+  : {
+      client: "sqlite3",
+      connection: {
+        filename: path.join(process.cwd(), "data", "kiosk.sqlite"),
+      },
+      useNullAsDefault: true,
+    };
+
+const db = knex(dbConfig);
+
+console.log(
+  `🗄️ Banco de dados configurado: ${process.env.DATABASE_URL ? "PostgreSQL (Produção)" : "SQLite (Local)"}`
+);
 
 // Função para inicializar as tabelas e carregar dados iniciais (SEED)
 async function initDatabase() {

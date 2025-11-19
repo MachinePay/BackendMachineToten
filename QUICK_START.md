@@ -11,22 +11,32 @@ git commit -m "Backend pronto para Render"
 git push origin main
 ```
 
-### 2️⃣ Deploy no Render (5 minutos)
+### 2️⃣ Deploy no Render (8 minutos)
 
 1. Acesse: https://render.com
-2. **New +** → **Web Service**
-3. Conecte seu GitHub → Selecione este repo
-4. Configure:
+
+**Primeiro: Crie o Banco PostgreSQL**
+2. **New +** → **PostgreSQL**
+3. Configure:
+   - **Name**: `kiosk-db`
+   - **Instance Type**: Free
+4. **Create Database** → Aguarde 1-2 min
+
+**Depois: Crie o Web Service**
+5. **New +** → **Web Service**
+6. Conecte seu GitHub → Selecione este repo
+7. Configure:
    - **Build**: `npm install`
    - **Start**: `npm start`
-5. Adicione as variáveis:
+8. Adicione as variáveis:
    ```
    NODE_ENV=production
    PORT=3001
    OPENAI_API_KEY=sk-sua-chave-aqui
    FRONTEND_URL=https://seu-app.vercel.app
+   DATABASE_URL=<selecione o banco kiosk-db>
    ```
-6. **Create Web Service**
+9. **Create Web Service**
 
 ### 3️⃣ Conecte com Vercel (2 minutos)
 
@@ -59,6 +69,9 @@ Se retornar `{"status":"ok",...}` está funcionando! 🎉
 
 **IA não funciona?**
 → Verifique se `OPENAI_API_KEY` está correta em https://platform.openai.com/api-keys
+
+**Erro de banco de dados?**
+→ Confirme que criou o PostgreSQL primeiro e conectou via `DATABASE_URL`
 
 **Lento na primeira requisição?**
 → Normal! Render Free "dorme" após 15min sem uso (cold start ~30s)

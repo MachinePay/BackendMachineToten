@@ -29,19 +29,31 @@ git commit -m "Preparar backend para deploy no Render"
 git push origin main
 ```
 
-### Passo 2: Criar Serviço no Render
+### Passo 2: Criar Banco de Dados PostgreSQL no Render
 
 1. Acesse [https://render.com](https://render.com) e faça login
-2. Clique em **"New +"** → **"Web Service"**
-3. Conecte seu repositório GitHub
-4. Configure o serviço:
+2. Clique em **"New +"** → **"PostgreSQL"**
+3. Configure o banco:
+   - **Name**: `kiosk-db`
+   - **Database**: `kiosk`
+   - **User**: `kiosk_user`
+   - **Region**: Mesma do Web Service (ex: Oregon)
+   - **Instance Type**: `Free`
+4. Clique em **"Create Database"**
+5. Aguarde a criação (1-2 minutos)
+
+### Passo 3: Criar Web Service no Render
+
+1. Clique em **"New +"** → **"Web Service"**
+2. Conecte seu repositório GitHub
+3. Configure o serviço:
    - **Name**: `kiosk-backend` (ou nome de sua preferência)
    - **Runtime**: `Node`
    - **Build Command**: `npm install`
    - **Start Command**: `npm start`
    - **Instance Type**: `Free` (ou plano pago para produção)
 
-### Passo 3: Configurar Variáveis de Ambiente
+### Passo 4: Configurar Variáveis de Ambiente
 
 No dashboard do Render, adicione as seguintes variáveis de ambiente:
 
@@ -51,10 +63,13 @@ No dashboard do Render, adicione as seguintes variáveis de ambiente:
 | `PORT` | `3001` | Porta do servidor (Render define automaticamente) |
 | `OPENAI_API_KEY` | `sk-...` | Sua chave da API OpenAI |
 | `FRONTEND_URL` | `https://seu-app.vercel.app` | URL do frontend no Vercel |
+| `DATABASE_URL` | *Do Banco PostgreSQL* | Conectar ao banco criado no Passo 2 |
+
+> **DATABASE_URL**: No campo de valor, selecione o banco `kiosk-db` que você criou. O Render vai conectar automaticamente.
 
 > **Importante**: Você pode adicionar múltiplas URLs separadas por vírgula em `FRONTEND_URL` para diferentes ambientes (produção, staging, etc.)
 
-### Passo 4: Deploy
+### Passo 5: Deploy
 
 1. Clique em **"Create Web Service"**
 2. Aguarde o build e deploy automático
@@ -152,15 +167,23 @@ O servidor estará rodando em `http://localhost:3001`
 
 ```
 BackendMachineToten/
-├── server.js           # Servidor principal
-├── package.json        # Dependências
-├── render.yaml         # Configuração do Render
+├── server.js           # Servidor principal (configuração híbrida de banco)
+├── package.json        # Dependências (inclui pg e sqlite3)
+├── render.yaml         # Configuração do Render + PostgreSQL
 ├── .env.example        # Exemplo de variáveis de ambiente
 ├── data/
 │   ├── menu.json      # Dados iniciais do menu
-│   └── kiosk.sqlite   # Banco de dados SQLite (gerado automaticamente)
+│   └── kiosk.sqlite   # Banco SQLite (apenas desenvolvimento local)
 └── README.md          # Este arquivo
 ```
+
+## 🗄️ Banco de Dados
+
+O backend usa **configuração híbrida**:
+- **Produção (Render)**: PostgreSQL (persistente e confiável)
+- **Desenvolvimento Local**: SQLite (simples e rápido)
+
+A escolha é automática baseada na variável `DATABASE_URL`.
 
 ## 🔐 Segurança
 
@@ -171,14 +194,15 @@ BackendMachineToten/
 
 ## 📝 Notas Importantes
 
-### Persistência de Dados no Render
+### ✅ Persistência de Dados com PostgreSQL
 
-O Render (plano free) usa **armazenamento efêmero**, o que significa que:
-- Os dados do SQLite serão perdidos quando o serviço reiniciar
-- Para produção, considere usar um banco de dados externo:
-  - PostgreSQL (Render oferece plano free)
-  - MongoDB Atlas
-  - Supabase
+Usando o **PostgreSQL do Render**:
+- ✅ Dados persistem entre deploys e restarts
+- ✅ Plano free disponível (1GB de armazenamento)
+- ✅ Backup automático em planos pagos
+- ✅ SSL/TLS habilitado por padrão
+
+O backend detecta automaticamente se está em produção (`DATABASE_URL` presente) e usa PostgreSQL, caso contrário usa SQLite localmente.
 
 ### Sleep Mode no Plano Free
 
@@ -210,6 +234,14 @@ Se receber erro de CORS, verifique:
 ### Banco de dados vazio após deploy
 
 Isso é esperado no primeiro deploy. O banco será criado e populado automaticamente na primeira inicialização.
+
+### Erro de conexão com PostgreSQL
+
+Se receber erro de conexão com o banco:
+1. Verifique se o banco PostgreSQL foi criado no Render
+2. Confirme que `DATABASE_URL` está configurada corretamente
+3. Verifique os logs do banco no Render Dashboard
+4. Certifique-se que Web Service e Database estão na mesma região
 
 ## 📄 Licença
 
