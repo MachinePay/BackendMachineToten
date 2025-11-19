@@ -1,0 +1,220 @@
+# Kiosk Pro Backend 🍕
+
+Backend para sistema de Kiosk de Pastelaria com Inteligência Artificial usando OpenAI (GPT-4o-mini).
+
+## 🚀 Tecnologias
+
+- **Node.js + Express** - Servidor HTTP
+- **SQLite + Knex** - Banco de dados
+- **OpenAI API** - Inteligência Artificial para sugestões e chatbot
+- **CORS** - Configurado para integração com Vercel
+
+## 📋 Funcionalidades
+
+- ✅ CRUD de produtos (menu)
+- ✅ Gerenciamento de usuários
+- ✅ Sistema de pedidos
+- ✅ Sugestões de upsell com IA
+- ✅ Chatbot assistente
+- ✅ Health check endpoint
+
+## 🌐 Deploy no Render
+
+### Passo 1: Preparar o Repositório
+
+1. Faça commit das alterações:
+```bash
+git add .
+git commit -m "Preparar backend para deploy no Render"
+git push origin main
+```
+
+### Passo 2: Criar Serviço no Render
+
+1. Acesse [https://render.com](https://render.com) e faça login
+2. Clique em **"New +"** → **"Web Service"**
+3. Conecte seu repositório GitHub
+4. Configure o serviço:
+   - **Name**: `kiosk-backend` (ou nome de sua preferência)
+   - **Runtime**: `Node`
+   - **Build Command**: `npm install`
+   - **Start Command**: `npm start`
+   - **Instance Type**: `Free` (ou plano pago para produção)
+
+### Passo 3: Configurar Variáveis de Ambiente
+
+No dashboard do Render, adicione as seguintes variáveis de ambiente:
+
+| Variável | Valor | Descrição |
+|----------|-------|-----------|
+| `NODE_ENV` | `production` | Ambiente de execução |
+| `PORT` | `3001` | Porta do servidor (Render define automaticamente) |
+| `OPENAI_API_KEY` | `sk-...` | Sua chave da API OpenAI |
+| `FRONTEND_URL` | `https://seu-app.vercel.app` | URL do frontend no Vercel |
+
+> **Importante**: Você pode adicionar múltiplas URLs separadas por vírgula em `FRONTEND_URL` para diferentes ambientes (produção, staging, etc.)
+
+### Passo 4: Deploy
+
+1. Clique em **"Create Web Service"**
+2. Aguarde o build e deploy automático
+3. Anote a URL do backend (ex: `https://kiosk-backend.onrender.com`)
+
+## 🔗 Conectar com Frontend no Vercel
+
+### No seu Frontend (Vercel):
+
+1. Adicione a variável de ambiente no Vercel:
+   - `NEXT_PUBLIC_API_URL` (ou equivalente): `https://kiosk-backend.onrender.com`
+
+2. No código do frontend, use a variável:
+```javascript
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
+// Exemplo de chamada
+fetch(`${API_URL}/api/menu`)
+  .then(res => res.json())
+  .then(data => console.log(data));
+```
+
+### Atualizar CORS no Backend:
+
+Depois de fazer deploy do frontend no Vercel, atualize a variável `FRONTEND_URL` no Render com a URL real do Vercel:
+
+```
+FRONTEND_URL=https://seu-app.vercel.app,https://seu-app-git-main.vercel.app
+```
+
+## 🧪 Testar a API
+
+### Endpoints Principais:
+
+```bash
+# Health check
+GET https://kiosk-backend.onrender.com/health
+
+# Listar produtos
+GET https://kiosk-backend.onrender.com/api/menu
+
+# Criar pedido
+POST https://kiosk-backend.onrender.com/api/orders
+Content-Type: application/json
+{
+  "userId": "user_123",
+  "userName": "João Silva",
+  "items": [
+    { "id": "prod_1", "name": "Pastel de Carne", "price": 8.5, "quantity": 2 }
+  ],
+  "total": 17.0
+}
+
+# Chat com IA
+POST https://kiosk-backend.onrender.com/api/ai/chat
+Content-Type: application/json
+{
+  "message": "Qual o pastel mais popular?"
+}
+```
+
+## 🛠️ Desenvolvimento Local
+
+1. Clone o repositório:
+```bash
+git clone <seu-repositorio>
+cd BackendMachineToten
+```
+
+2. Instale as dependências:
+```bash
+npm install
+```
+
+3. Crie o arquivo `.env`:
+```bash
+cp .env.example .env
+```
+
+4. Edite o `.env` com suas configurações:
+```env
+PORT=3001
+FRONTEND_URL=http://localhost:3000
+OPENAI_API_KEY=sk-your-api-key-here
+```
+
+5. Inicie o servidor:
+```bash
+npm run dev
+```
+
+O servidor estará rodando em `http://localhost:3001`
+
+## 📂 Estrutura do Projeto
+
+```
+BackendMachineToten/
+├── server.js           # Servidor principal
+├── package.json        # Dependências
+├── render.yaml         # Configuração do Render
+├── .env.example        # Exemplo de variáveis de ambiente
+├── data/
+│   ├── menu.json      # Dados iniciais do menu
+│   └── kiosk.sqlite   # Banco de dados SQLite (gerado automaticamente)
+└── README.md          # Este arquivo
+```
+
+## 🔐 Segurança
+
+- ✅ CORS configurado para aceitar apenas domínios autorizados
+- ✅ Variáveis de ambiente para dados sensíveis
+- ✅ Validação de dados de entrada
+- ✅ Tratamento de erros
+
+## 📝 Notas Importantes
+
+### Persistência de Dados no Render
+
+O Render (plano free) usa **armazenamento efêmero**, o que significa que:
+- Os dados do SQLite serão perdidos quando o serviço reiniciar
+- Para produção, considere usar um banco de dados externo:
+  - PostgreSQL (Render oferece plano free)
+  - MongoDB Atlas
+  - Supabase
+
+### Sleep Mode no Plano Free
+
+O Render coloca serviços gratuitos em "sleep" após 15 minutos de inatividade:
+- A primeira requisição pode demorar ~30 segundos (cold start)
+- Considere usar um serviço de ping ou upgrade para plano pago
+
+## 📚 Recursos Úteis
+
+- [Documentação Render](https://render.com/docs)
+- [Documentação OpenAI](https://platform.openai.com/docs)
+- [Documentação Vercel](https://vercel.com/docs)
+
+## 🆘 Troubleshooting
+
+### Erro de CORS
+
+Se receber erro de CORS, verifique:
+1. A variável `FRONTEND_URL` está configurada no Render
+2. A URL do frontend está correta (incluindo https://)
+3. O frontend está fazendo requisições para a URL correta do backend
+
+### IA não funciona
+
+1. Verifique se `OPENAI_API_KEY` está configurada
+2. Confirme se a chave é válida em https://platform.openai.com/api-keys
+3. Verifique se há créditos disponíveis na conta OpenAI
+
+### Banco de dados vazio após deploy
+
+Isso é esperado no primeiro deploy. O banco será criado e populado automaticamente na primeira inicialização.
+
+## 📄 Licença
+
+Este projeto é privado e proprietário.
+
+---
+
+Desenvolvido para Kiosk Pro 🚀

@@ -102,10 +102,25 @@ async function initDatabase() {
 }
 
 // --- Middlewares ---
+// CORS configurado para aceitar requisições do Vercel
+const allowedOrigins = process.env.FRONTEND_URL
+  ? process.env.FRONTEND_URL.split(",").map((url) => url.trim())
+  : ["*"];
+
 app.use(
   cors({
-    origin: "*",
+    origin: function (origin, callback) {
+      // Permite requisições sem origin (como Postman) ou de origens permitidas
+      if (!origin || allowedOrigins.includes("*")) {
+        return callback(null, true);
+      }
+      if (allowedOrigins.some((allowed) => origin.startsWith(allowed))) {
+        return callback(null, true);
+      }
+      callback(new Error("Not allowed by CORS"));
+    },
     methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
+    credentials: true,
   })
 );
 app.use(express.json());
@@ -121,6 +136,15 @@ app.get("/", (req, res) => {
   res.send(
     "<h2>Pastelaria Backend Online (OpenAI) 🚀</h2><p>Usando Knex/SQLite para dados.</p>"
   );
+});
+
+// Health check endpoint para Render
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+  });
 });
 
 // ==========================================
