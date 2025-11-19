@@ -1,0 +1,56 @@
+[
+  {
+    "id": "prod_1",
+    "name": "Pastel de Carne",
+    "description": "Clássico pastel recheado com carne moída temperada.",
+    "price": 8.5,
+    "category": "Pastel",
+    "videoUrl": "/videos/PastelDeCarne.mp4",
+    "popular": true
+  },
+  {
+    "id": "prod_2",
+    "name": "Pastel de Queijo",
+    "description": "Delicioso pastel com queijo mussarela derretido.",
+    "price": 8.0,
+    "category": "Pastel",
+    "videoUrl": "/videos/PastelDeQueijo.mp4",
+    "popular": true
+  },
+  {
+    "id": "prod_3",
+    "name": "Pastel de Frango",
+    "description": "Saboroso pastel recheado com frango desfiado.",
+    "price": 8.5,
+    "category": "Pastel",
+    "videoUrl": "/videos/PastelDeFrangoComCatupiry.mp4",
+    "popular": false
+  },
+  {
+    "id": "prod_4",
+    "name": "Coca-Cola Lata",
+    "description": "Refrigerante de cola gelado em lata de 350ml.",
+    "price": 5.0,
+    "category": "Bebida",
+    "videoUrl": "/videos/CocaLata.mp4",
+    "popular": true
+  },
+  {
+    "id": "prod_5",
+    "name": "Suco de Laranja Natural",
+    "description": "Suco feito na hora com laranjas frescas (500ml).",
+    "price": 7.0,
+    "category": "Bebida",
+    "videoUrl": "/videos/SucoDeLaranja.mp4",
+    "popular": false
+  },
+  {
+    "id": "prod_6",
+    "name": "Pastel de Nutella com Morango",
+    "description": "Uma sobremesa incrível: pastel recheado com Nutella e morangos frescos.",
+    "price": 10.0,
+    "category": "Doce",
+    "videoUrl": "/videos/PastelDeNutellaComMorango.mp4",
+    "popular": true
+  }
+]
