@@ -15,7 +15,6 @@ const openai = process.env.OPENAI_API_KEY
   : null;
 
 // --- CONFIGURAÇÃO DO BANCO DE DADOS ---
-// Detecta automaticamente: Se tem DATABASE_URL (Render), usa Postgres. Senão, usa SQLite.
 const dbConfig = process.env.DATABASE_URL
   ? {
       client: "pg",
@@ -90,10 +89,8 @@ async function initDatabase() {
     });
   }
 
-  // 4. Carregar Dados do Menu (Correção Crítica para Postgres)
+  // 4. Carregar Dados do Menu
   const result = await db("products").count("id as count").first();
-  // O Postgres retorna count como String ("0"), o SQLite como Number (0).
-  // Convertendo para Number, garantimos que funcione em ambos.
   const count = result ? Number(result.count) : 0;
 
   if (count === 0) {
@@ -137,7 +134,6 @@ app.use(express.json());
 
 // --- Rotas ---
 
-// Rota Raiz (Atualizada para mostrar o status real)
 app.get("/", (req, res) => {
   res.send(`
     <div style="font-family: sans-serif; text-align: center; padding: 20px;">
@@ -155,17 +151,13 @@ app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok", db: dbType });
 });
 
-// Rota de Emergência (Útil se o banco continuar vazio)
 app.get("/api/force-seed", async (req, res) => {
   try {
     const menuDataPath = path.join(process.cwd(), "data", "menu.json");
     const rawData = await fs.readFile(menuDataPath, "utf-8");
     const MENU_DATA = JSON.parse(rawData);
-
-    // Cuidado: Limpa e insere de novo
     await db("products").del();
     await db("products").insert(MENU_DATA);
-
     res.json({
       message: "Menu recarregado com sucesso!",
       count: MENU_DATA.length,
@@ -177,17 +169,13 @@ app.get("/api/force-seed", async (req, res) => {
 
 // --- APIs do Sistema ---
 
-// API Padrão
 app.get("/api/menu", async (req, res) => {
   try {
     const products = await db("products").select("*").orderBy("id");
-
-    // CORREÇÃO: Converter 'price' de string para number
     const parsedProducts = products.map((product) => ({
       ...product,
-      price: parseFloat(product.price), // Garante que seja número
+      price: parseFloat(product.price),
     }));
-
     res.json(parsedProducts);
   } catch (e) {
     console.error(e);
@@ -243,34 +231,15 @@ app.get("/api/orders", async (req, res) => {
   res.json(parsed);
 });
 
-app.get("/api/user-orders", async (req, res) => {
-  const { userId } = req.query;
-  let query = db("orders").orderBy("timestamp", "desc");
-  if (userId) {
-    query = query.where({ userId });
-  }
-  const allOrders = await query.select("*");
-  const parsedOrders = allOrders.map((o) => ({
-    ...o,
-    items: JSON.parse(o.items),
-    total: parseFloat(o.total),
-  }));
-  res.json(parsedOrders);
-});
-
-// ==========================================
-// ROTAS DE PEDIDOS (Atualizado para corrigir erro 500)
-// ==========================================
+// Rota corrigida para evitar erro 500 no POST
 app.post("/api/orders", async (req, res) => {
   const payload = req.body;
 
-  // Validação básica
   if (!payload || !payload.userId || !Array.isArray(payload.items)) {
     return res.status(400).json({ error: "Dados inválidos" });
   }
 
   const id = `order_${Date.now()}`;
-  // Calcula total ou usa o enviado
   const total =
     typeof payload.total === "number"
       ? payload.total
@@ -280,22 +249,17 @@ app.post("/api/orders", async (req, res) => {
     id,
     userId: payload.userId,
     userName: payload.userName || "Cliente",
-    items: JSON.stringify(payload.items), // Serializa para salvar
+    items: JSON.stringify(payload.items),
     total,
     timestamp: new Date().toISOString(),
     status: "active",
   };
 
   try {
-    // --- CORREÇÃO PARA POSTGRESQL ---
-    // Verifica se o usuário existe antes de salvar o pedido
+    // Verifica e cria usuário se não existir (Convidado)
     const userExists = await db("users").where({ id: payload.userId }).first();
-
     if (!userExists) {
-      console.log(
-        `👤 Usuário ${payload.userId} não encontrado. Criando automaticamente...`
-      );
-      // Cria o usuário "fantasma" para satisfazer a chave estrangeira
+      console.log(`👤 Criando usuário convidado: ${payload.userId}`);
       await db("users").insert({
         id: payload.userId,
         name: payload.userName || "Convidado",
@@ -305,12 +269,11 @@ app.post("/api/orders", async (req, res) => {
         pontos: 0,
       });
     }
-    // --------------------------------
 
     await db("orders").insert(newOrder);
     res.status(201).json({ ...newOrder, items: payload.items });
   } catch (err) {
-    console.error("Erro ao salvar pedido:", err); // Isso vai aparecer nos logs da Render
+    console.error("Erro ao salvar pedido:", err);
     res.status(500).json({ error: "Erro ao processar pedido no servidor." });
   }
 });
@@ -326,8 +289,28 @@ app.delete("/api/orders/:id", async (req, res) => {
   }
 });
 
-// --- Rotas de IA ---
+// API User Orders (que estava dando erro no fetch)
+app.get("/api/user-orders", async (req, res) => {
+  const { userId } = req.query;
+  try {
+    let query = db("orders").orderBy("timestamp", "desc");
+    if (userId) {
+      query = query.where({ userId });
+    }
+    const allOrders = await query.select("*");
+    const parsedOrders = allOrders.map((o) => ({
+      ...o,
+      items: JSON.parse(o.items),
+      total: parseFloat(o.total),
+    }));
+    res.json(parsedOrders);
+  } catch (err) {
+    console.error("Erro ao buscar user-orders:", err);
+    res.status(500).json({ error: "Erro ao buscar histórico" });
+  }
+});
 
+// --- Rotas de IA ---
 app.post("/api/ai/suggestion", async (req, res) => {
   if (!openai) return res.json({ text: "Experimente nosso Pastel de Carne!" });
   try {
@@ -354,8 +337,7 @@ app.post("/api/ai/chat", async (req, res) => {
       messages: [
         {
           role: "system",
-          content:
-            "Você é o atendente da Pastelaria Kiosk Pro. Seja curto e amigável.",
+          content: "Atendente de pastelaria. Curto e amigável.",
         },
         { role: "user", content: req.body.message },
       ],
@@ -368,9 +350,16 @@ app.post("/api/ai/chat", async (req, res) => {
   }
 });
 
-// --- Inicialização ---
-initDatabase().then(() => {
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`✅ Servidor rodando na porta ${PORT}`);
+// --- Inicialização com Tratamento de Erro ---
+console.log("🚀 Iniciando servidor...");
+initDatabase()
+  .then(() => {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`✅ Servidor rodando na porta ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("❌ ERRO FATAL ao iniciar servidor:", err);
+    // O Render vai reiniciar o processo se ele sair, mas o log nos dirá o motivo
+    process.exit(1);
   });
-});
