@@ -2,33 +2,26 @@ import express from "express";
 import fs from "fs/promises";
 import path from "path";
 import cors from "cors";
-import OpenAI from "openai"; // MUDANÇA: Usando OpenAI agora
+import OpenAI from "openai";
 import knex from "knex";
+// import "sqlite3"; // Mantenha comentado ou removido para o Render
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // --- Configuração da IA (OpenAI) ---
-// A chave deve estar no arquivo .env do backend como OPENAI_API_KEY
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
 
-if (!process.env.OPENAI_API_KEY) {
-  console.warn(
-    "⚠️ AVISO: A variável OPENAI_API_KEY não foi definida. As funcionalidades de IA não funcionarão."
-  );
-} else {
-  console.log("✅ OpenAI (GPT-4o-mini) configurada com sucesso.");
-}
-
-// --- CONFIGURAÇÃO DO BANCO DE DADOS (Híbrido: Postgres em Prod, SQLite Local) ---
+// --- CONFIGURAÇÃO DO BANCO DE DADOS ---
+// Detecta automaticamente: Se tem DATABASE_URL (Render), usa Postgres. Senão, usa SQLite.
 const dbConfig = process.env.DATABASE_URL
   ? {
       client: "pg",
       connection: {
         connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false }, // Necessário para Render
+        ssl: { rejectUnauthorized: false },
       },
     }
   : {
@@ -41,15 +34,17 @@ const dbConfig = process.env.DATABASE_URL
 
 const db = knex(dbConfig);
 
-console.log(
-  `🗄️ Banco de dados configurado: ${process.env.DATABASE_URL ? "PostgreSQL (Produção)" : "SQLite (Local)"}`
-);
+// Identificação visual do banco para a rota raiz
+const dbType = process.env.DATABASE_URL
+  ? "PostgreSQL (Render)"
+  : "SQLite (Local)";
+console.log(`🗄️ Banco de dados conectado: ${dbType}`);
 
-// Função para inicializar as tabelas e carregar dados iniciais (SEED)
+// --- SEED: Função para inicializar o banco ---
 async function initDatabase() {
-  console.log("⏳ Verificando e inicializando tabelas do banco de dados...");
+  console.log("⏳ Verificando tabelas...");
 
-  // Tabela de Produtos
+  // 1. Tabela de Produtos
   const hasProducts = await db.schema.hasTable("products");
   if (!hasProducts) {
     await db.schema.createTable("products", (table) => {
@@ -63,7 +58,7 @@ async function initDatabase() {
     });
   }
 
-  // Tabela de Usuários
+  // 2. Tabela de Usuários
   const hasUsers = await db.schema.hasTable("users");
   if (!hasUsers) {
     await db.schema.createTable("users", (table) => {
@@ -76,7 +71,7 @@ async function initDatabase() {
     });
   }
 
-  // Tabela de Pedidos
+  // 3. Tabela de Pedidos
   const hasOrders = await db.schema.hasTable("orders");
   if (!hasOrders) {
     await db.schema.createTable("orders", (table) => {
@@ -95,27 +90,29 @@ async function initDatabase() {
     });
   }
 
-  // Carregar menu.json se necessário
-  const productCount = await db("products").count("id as count").first();
-  if (productCount && productCount.count === 0) {
-    console.log("🛠️ Carregando dados iniciais do menu.json...");
+  // 4. Carregar Dados do Menu (Correção Crítica para Postgres)
+  const result = await db("products").count("id as count").first();
+  // O Postgres retorna count como String ("0"), o SQLite como Number (0).
+  // Convertendo para Number, garantimos que funcione em ambos.
+  const count = result ? Number(result.count) : 0;
+
+  if (count === 0) {
+    console.log("🛠️ Banco vazio! Carregando menu.json...");
     const menuDataPath = path.join(process.cwd(), "data", "menu.json");
     try {
       const rawData = await fs.readFile(menuDataPath, "utf-8");
       const MENU_DATA = JSON.parse(rawData);
       await db("products").insert(MENU_DATA);
-      console.log("✅ Dados do menu carregados.");
+      console.log("✅ Menu carregado com sucesso!");
     } catch (e) {
-      console.error(
-        "⚠️ Não foi possível carregar dados do menu.json. Ignorando seed.",
-        e.message
-      );
+      console.error("⚠️ Erro ao carregar menu.json:", e.message);
     }
+  } else {
+    console.log(`✅ O banco já contém ${count} produtos.`);
   }
 }
 
 // --- Middlewares ---
-// CORS configurado para aceitar requisições do Vercel
 const allowedOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(",").map((url) => url.trim())
   : ["*"];
@@ -123,11 +120,11 @@ const allowedOrigins = process.env.FRONTEND_URL
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Permite requisições sem origin (como Postman) ou de origens permitidas
-      if (!origin || allowedOrigins.includes("*")) {
-        return callback(null, true);
-      }
-      if (allowedOrigins.some((allowed) => origin.startsWith(allowed))) {
+      if (
+        !origin ||
+        allowedOrigins.includes("*") ||
+        allowedOrigins.some((url) => origin.startsWith(url))
+      ) {
         return callback(null, true);
       }
       callback(new Error("Not allowed by CORS"));
@@ -138,39 +135,58 @@ app.use(
 );
 app.use(express.json());
 
-// Log de requisições
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
-});
+// --- Rotas ---
 
-// --- Rota Raiz ---
+// Rota Raiz (Atualizada para mostrar o status real)
 app.get("/", (req, res) => {
-  res.send(
-    "<h2>Pastelaria Backend Online (OpenAI) 🚀</h2><p>Usando Knex/SQLite para dados.</p>"
-  );
+  res.send(`
+    <div style="font-family: sans-serif; text-align: center; padding: 20px;">
+      <h1>Pastelaria Backend Online 🚀</h1>
+      <p>Status: <strong>Online</strong></p>
+      <p>Banco de Dados: <strong>${dbType}</strong></p>
+      <p>IA: <strong>${
+        openai ? "Ativa (GPT-4o-mini)" : "Desativada"
+      }</strong></p>
+    </div>
+  `);
 });
 
-// Health check endpoint para Render
 app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-  });
+  res.status(200).json({ status: "ok", db: dbType });
 });
 
-// ==========================================
-// ROTAS DE PRODUTOS
-// ==========================================
+// Rota de Emergência (Útil se o banco continuar vazio)
+app.get("/api/force-seed", async (req, res) => {
+  try {
+    const menuDataPath = path.join(process.cwd(), "data", "menu.json");
+    const rawData = await fs.readFile(menuDataPath, "utf-8");
+    const MENU_DATA = JSON.parse(rawData);
+
+    // Cuidado: Limpa e insere de novo
+    await db("products").del();
+    await db("products").insert(MENU_DATA);
+
+    res.json({
+      message: "Menu recarregado com sucesso!",
+      count: MENU_DATA.length,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- APIs do Sistema ---
+
 app.get("/api/menu", async (req, res) => {
-  const products = await db("products").select("*").orderBy("id");
-  res.json(products);
+  try {
+    const products = await db("products").select("*").orderBy("id");
+    res.json(products);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Erro ao buscar menu" });
+  }
 });
 
-// ==========================================
-// ROTAS DE USUÁRIOS
-// ==========================================
 app.get("/api/users", async (req, res) => {
   const users = await db("users").select("*");
   const parsedUsers = users.map((u) => ({
@@ -182,78 +198,51 @@ app.get("/api/users", async (req, res) => {
 
 app.post("/api/users", async (req, res) => {
   const payload = req.body;
-  if (!payload || !payload.cpf) {
-    return res.status(400).json({ error: "CPF é obrigatório" });
-  }
+  if (!payload || !payload.cpf)
+    return res.status(400).json({ error: "CPF obrigatório" });
 
   const cpfLimpo = String(payload.cpf).replace(/\D/g, "");
-  const exists = await db("users").where({ cpf: cpfLimpo }).first();
-  if (exists) {
-    return res.status(409).json({ error: "CPF já cadastrado" });
-  }
-
-  const newUser = {
-    id: payload.id || `user_${Date.now()}`,
-    name: payload.name || "Sem Nome",
-    email: payload.email || "",
-    cpf: cpfLimpo,
-    historico: JSON.stringify([]),
-    pontos: 0,
-  };
-
   try {
+    const exists = await db("users").where({ cpf: cpfLimpo }).first();
+    if (exists) return res.status(409).json({ error: "CPF já cadastrado" });
+
+    const newUser = {
+      id: payload.id || `user_${Date.now()}`,
+      name: payload.name || "Sem Nome",
+      email: payload.email || "",
+      cpf: cpfLimpo,
+      historico: JSON.stringify([]),
+      pontos: 0,
+    };
     await db("users").insert(newUser);
     res.status(201).json({ ...newUser, historico: [] });
   } catch (err) {
-    console.error("Erro ao salvar usuário no DB:", err);
+    console.error(err);
     res.status(500).json({ error: "Erro ao salvar usuário" });
   }
 });
 
-// ==========================================
-// ROTAS DE PEDIDOS
-// ==========================================
 app.get("/api/orders", async (req, res) => {
   const orders = await db("orders")
     .where({ status: "active" })
     .select("*")
     .orderBy("timestamp", "asc");
-  const parsedOrders = orders.map((o) => ({
+  const parsed = orders.map((o) => ({
     ...o,
     items: JSON.parse(o.items),
     total: parseFloat(o.total),
   }));
-  res.json(parsedOrders);
-});
-
-app.get("/api/user-orders", async (req, res) => {
-  const { userId } = req.query;
-  let query = db("orders").orderBy("timestamp", "desc");
-  if (userId) {
-    query = query.where({ userId });
-  }
-  const allOrders = await query.select("*");
-  const parsedOrders = allOrders.map((o) => ({
-    ...o,
-    items: JSON.parse(o.items),
-    total: parseFloat(o.total),
-  }));
-  res.json(parsedOrders);
+  res.json(parsed);
 });
 
 app.post("/api/orders", async (req, res) => {
   const payload = req.body;
-  if (!payload || !payload.userId || !Array.isArray(payload.items)) {
-    return res
-      .status(400)
-      .json({ error: "Dados inválidos: userId e items são obrigatórios." });
-  }
-
   const id = `order_${Date.now()}`;
+  // Calcula total ou usa o enviado
   const total =
     typeof payload.total === "number"
       ? payload.total
-      : payload.items.reduce((acc, it) => acc + it.price * it.quantity, 0);
+      : (payload.items || []).reduce((acc, i) => acc + i.price * i.quantity, 0);
 
   const newOrder = {
     id,
@@ -266,135 +255,71 @@ app.post("/api/orders", async (req, res) => {
   };
 
   try {
-    await db.transaction(async (trx) => {
-      await trx("orders").insert(newOrder);
-      const user = await trx("users").where({ id: payload.userId }).first();
-      if (user) {
-        let historico = JSON.parse(user.historico || "[]");
-        historico.push({ ...newOrder, items: payload.items, total });
-        await trx("users")
-          .where({ id: payload.userId })
-          .update({ historico: JSON.stringify(historico) });
-      }
-    });
-    res.status(201).json({ ...newOrder, items: payload.items, total });
+    await db("orders").insert(newOrder);
+    // Opcional: Atualizar histórico do usuário aqui se necessário
+    res.status(201).json({ ...newOrder, items: payload.items });
   } catch (err) {
-    console.error("Erro ao processar pedido no DB:", err);
-    res.status(500).json({ error: "Falha ao salvar pedido" });
+    console.error(err);
+    res.status(500).json({ error: "Erro ao salvar pedido" });
   }
 });
 
 app.delete("/api/orders/:id", async (req, res) => {
-  const { id } = req.params;
-  const completedAt = new Date().toISOString();
   try {
-    const updated = await db("orders").where({ id }).update({
-      status: "completed",
-      completedAt,
-    });
-    if (updated === 0)
-      return res.status(404).json({ error: "Pedido não encontrado" });
+    await db("orders")
+      .where({ id: req.params.id })
+      .update({ status: "completed", completedAt: new Date().toISOString() });
     res.json({ ok: true });
-  } catch (err) {
-    console.error("Erro ao finalizar pedido:", err);
-    res.status(500).json({ error: "Falha ao finalizar pedido" });
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao finalizar pedido" });
   }
 });
 
-// ==========================================
-// ROTAS DE INTELIGÊNCIA ARTIFICIAL (OPENAI)
-// ==========================================
+// --- Rotas de IA ---
 
-// Sugestão de Cardápio e Upsell
 app.post("/api/ai/suggestion", async (req, res) => {
-  if (!openai) {
-    return res.status(503).json({ error: "Serviço de IA indisponível" });
-  }
-
-  const { prompt } = req.body;
-  if (!prompt) return res.status(400).json({ error: "Prompt é obrigatório" });
-
+  if (!openai) return res.json({ text: "Experimente nosso Pastel de Carne!" });
   try {
-    // Chamada para OpenAI (GPT-4o-mini)
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // Modelo rápido e barato
+      model: "gpt-4o-mini",
       messages: [
-        {
-          role: "system",
-          content:
-            "Você é um Chef de Pastelaria especialista em vendas. Responda apenas o texto da sugestão.",
-        },
-        { role: "user", content: prompt },
+        { role: "system", content: "Seja um garçom vendedor." },
+        { role: "user", content: req.body.prompt },
       ],
-      max_tokens: 100, // Limita resposta para ser rápido
-      temperature: 0.7, // Criatividade média
+      max_tokens: 100,
     });
-
-    const text = completion.choices[0].message.content;
-    res.json({ text });
-  } catch (error) {
-    console.error("❌ Erro na OpenAI (Sugestão):", error);
-
-    // FALLBACK: Se a IA falhar, não trava o toten. Retorna uma sugestão padrão.
-    res.status(200).json({
-      text: "Que tal adicionar um delicioso caldo de cana geladinho?",
-    });
+    res.json({ text: completion.choices[0].message.content });
+  } catch (e) {
+    console.error(e);
+    res.json({ text: "Hoje recomendo o Pastel de Queijo!" });
   }
 });
 
-// Chatbot
 app.post("/api/ai/chat", async (req, res) => {
-  if (!openai) {
-    return res.status(503).json({ error: "Serviço de IA indisponível" });
-  }
-
-  const { message } = req.body;
-  if (!message)
-    return res.status(400).json({ error: "Mensagem é obrigatória" });
-
+  if (!openai) return res.status(503).json({ error: "IA Indisponível" });
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: `Você é o Chef da 'Pastelaria Kiosk Pro'. 
-            Seu tom é amigável, prestativo e brasileiro.
-            Responda dúvidas sobre o cardápio e ajude a escolher.
-            Seja curto e objetivo (máximo 2 frases).`,
+          content:
+            "Você é o atendente da Pastelaria Kiosk Pro. Seja curto e amigável.",
         },
-        { role: "user", content: message },
+        { role: "user", content: req.body.message },
       ],
       max_tokens: 150,
     });
-
-    const text = completion.choices[0].message.content;
-    res.json({ text });
-  } catch (error) {
-    console.error("Erro na OpenAI (Chat):", error);
-    res
-      .status(500)
-      .json({ error: "O Chef está ocupado na cozinha (erro de conexão)." });
+    res.json({ text: completion.choices[0].message.content });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Erro na IA" });
   }
 });
 
 // --- Inicialização ---
-console.log("🚀 Iniciando servidor...");
-initDatabase()
-  .then(() => {
-    console.log("✅ Banco inicializado com sucesso!");
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`✅ Servidor rodando na porta ${PORT}`);
-      console.log(
-        `🗄️ Banco de dados SQLite em: ${path.join(
-          process.cwd(),
-          "data",
-          "kiosk.sqlite"
-        )}`
-      );
-    });
-  })
-  .catch((err) => {
-    console.error("❌ ERRO FATAL ao inicializar o banco de dados:", err);
-    process.exit(1);
+initDatabase().then(() => {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`✅ Servidor rodando na porta ${PORT}`);
   });
+});
