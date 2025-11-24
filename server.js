@@ -4,7 +4,7 @@ import path from "path";
 import cors from "cors";
 import OpenAI from "openai";
 import knex from "knex";
-// import "sqlite3"; // Mantenha comentado ou removido para o Render
+// import "sqlite3"; // Mantenha comentado para evitar erros no Render
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -54,6 +54,7 @@ console.log(`🗄️ Banco de dados conectado: ${dbType}`);
 async function initDatabase() {
   console.log("⏳ Verificando tabelas...");
 
+  // Tabela de Produtos
   const hasProducts = await db.schema.hasTable("products");
   if (!hasProducts) {
     await db.schema.createTable("products", (table) => {
@@ -67,6 +68,7 @@ async function initDatabase() {
     });
   }
 
+  // Tabela de Usuários
   const hasUsers = await db.schema.hasTable("users");
   if (!hasUsers) {
     await db.schema.createTable("users", (table) => {
@@ -79,6 +81,7 @@ async function initDatabase() {
     });
   }
 
+  // Tabela de Pedidos
   const hasOrders = await db.schema.hasTable("orders");
   if (!hasOrders) {
     await db.schema.createTable("orders", (table) => {
@@ -97,7 +100,7 @@ async function initDatabase() {
     });
   }
 
-  // Seed Menu
+  // Carregar Dados do Menu se estiver vazio
   const result = await db("products").count("id as count").first();
   const count = result ? Number(result.count) : 0;
 
@@ -112,6 +115,8 @@ async function initDatabase() {
     } catch (e) {
       console.error("⚠️ Erro ao carregar menu.json:", e.message);
     }
+  } else {
+    console.log(`✅ O banco já contém ${count} produtos.`);
   }
 }
 
@@ -138,10 +143,16 @@ app.use(
 );
 app.use(express.json());
 
-// --- Rotas ---
+// --- Rotas Gerais ---
 
 app.get("/", (req, res) => {
-  res.send(`<h2>Pastelaria Backend Online 🚀</h2><p>Banco: ${dbType}</p>`);
+  res.send(`
+    <div style="font-family: sans-serif; text-align: center; padding: 20px;">
+      <h1>Pastelaria Backend Online 🚀</h1>
+      <p>Banco: <strong>${dbType}</strong></p>
+      <p>Modo Debug IA: <strong>ATIVADO</strong> (Erros aparecerão na tela)</p>
+    </div>
+  `);
 });
 
 app.get("/health", (req, res) => {
@@ -161,7 +172,7 @@ app.get("/api/force-seed", async (req, res) => {
   }
 });
 
-// --- APIs do Sistema (COM CORREÇÕES) ---
+// --- APIs do Sistema ---
 
 app.get("/api/menu", async (req, res) => {
   try {
@@ -182,7 +193,7 @@ app.get("/api/users", async (req, res) => {
     const users = await db("users").select("*");
     const parsedUsers = users.map((u) => ({
       ...u,
-      historico: parseJSON(u.historico), // Usa o helper seguro
+      historico: parseJSON(u.historico),
     }));
     res.json(parsedUsers);
   } catch (e) {
@@ -216,7 +227,6 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
-// Rota da Cozinha (CORRIGIDA)
 app.get("/api/orders", async (req, res) => {
   try {
     const orders = await db("orders")
@@ -226,7 +236,7 @@ app.get("/api/orders", async (req, res) => {
 
     const parsed = orders.map((o) => ({
       ...o,
-      items: parseJSON(o.items), // Usa o helper seguro
+      items: parseJSON(o.items),
       total: parseFloat(o.total),
     }));
     res.json(parsed);
@@ -259,7 +269,6 @@ app.post("/api/orders", async (req, res) => {
   };
 
   try {
-    // Garante que usuário existe (fix erro FK Postgres)
     const userExists = await db("users").where({ id: payload.userId }).first();
     if (!userExists) {
       await db("users").insert({
@@ -291,7 +300,6 @@ app.delete("/api/orders/:id", async (req, res) => {
   }
 });
 
-// Rota do Admin (CORRIGIDA)
 app.get("/api/user-orders", async (req, res) => {
   try {
     const { userId } = req.query;
@@ -301,7 +309,7 @@ app.get("/api/user-orders", async (req, res) => {
     const allOrders = await query.select("*");
     const parsedOrders = allOrders.map((o) => ({
       ...o,
-      items: parseJSON(o.items), // Usa o helper seguro
+      items: parseJSON(o.items),
       total: parseFloat(o.total),
     }));
     res.json(parsedOrders);
@@ -311,9 +319,11 @@ app.get("/api/user-orders", async (req, res) => {
   }
 });
 
-// --- IA ---
+// --- Rotas de IA (MODO DEBUG ATIVADO) ---
+
 app.post("/api/ai/suggestion", async (req, res) => {
-  if (!openai) return res.json({ text: "Experimente nosso Pastel de Carne!" });
+  if (!openai)
+    return res.json({ text: "ERRO: Chave API não configurada no .env" });
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -325,28 +335,33 @@ app.post("/api/ai/suggestion", async (req, res) => {
     });
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    res.json({ text: "Recomendo Pastel de Queijo!" });
+    console.error("Erro OpenAI:", e);
+    // RETORNA O ERRO REAL PARA O FRONTEND
+    res.json({ text: `ERRO DA API (DEBUG): ${e.message}` });
   }
 });
 
 app.post("/api/ai/chat", async (req, res) => {
-  if (!openai) return res.status(503).json({ error: "IA Off" });
+  if (!openai) return res.status(503).json({ error: "IA não configurada" });
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "Atendente curto e amigável." },
+        { role: "system", content: "Atendente curto." },
         { role: "user", content: req.body.message },
       ],
       max_tokens: 150,
     });
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    res.status(500).json({ error: "Erro IA" });
+    console.error("Erro OpenAI:", e);
+    // RETORNA O ERRO REAL PARA O FRONTEND
+    res.json({ text: `ERRO DA API (DEBUG): ${e.message}` });
   }
 });
 
-// Inicialização
+// --- Inicialização ---
+console.log("🚀 Iniciando servidor...");
 initDatabase()
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => {
@@ -354,6 +369,6 @@ initDatabase()
     });
   })
   .catch((err) => {
-    console.error("❌ ERRO FATAL:", err);
+    console.error("❌ ERRO FATAL ao iniciar servidor:", err);
     process.exit(1);
   });
