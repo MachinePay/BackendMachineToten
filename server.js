@@ -243,8 +243,32 @@ app.get("/api/orders", async (req, res) => {
   res.json(parsed);
 });
 
+app.get("/api/user-orders", async (req, res) => {
+  const { userId } = req.query;
+  let query = db("orders").orderBy("timestamp", "desc");
+  if (userId) {
+    query = query.where({ userId });
+  }
+  const allOrders = await query.select("*");
+  const parsedOrders = allOrders.map((o) => ({
+    ...o,
+    items: JSON.parse(o.items),
+    total: parseFloat(o.total),
+  }));
+  res.json(parsedOrders);
+});
+
+// ==========================================
+// ROTAS DE PEDIDOS (Atualizado para corrigir erro 500)
+// ==========================================
 app.post("/api/orders", async (req, res) => {
   const payload = req.body;
+
+  // Validação básica
+  if (!payload || !payload.userId || !Array.isArray(payload.items)) {
+    return res.status(400).json({ error: "Dados inválidos" });
+  }
+
   const id = `order_${Date.now()}`;
   // Calcula total ou usa o enviado
   const total =
@@ -255,20 +279,39 @@ app.post("/api/orders", async (req, res) => {
   const newOrder = {
     id,
     userId: payload.userId,
-    userName: payload.userName || "",
-    items: JSON.stringify(payload.items),
+    userName: payload.userName || "Cliente",
+    items: JSON.stringify(payload.items), // Serializa para salvar
     total,
     timestamp: new Date().toISOString(),
     status: "active",
   };
 
   try {
+    // --- CORREÇÃO PARA POSTGRESQL ---
+    // Verifica se o usuário existe antes de salvar o pedido
+    const userExists = await db("users").where({ id: payload.userId }).first();
+
+    if (!userExists) {
+      console.log(
+        `👤 Usuário ${payload.userId} não encontrado. Criando automaticamente...`
+      );
+      // Cria o usuário "fantasma" para satisfazer a chave estrangeira
+      await db("users").insert({
+        id: payload.userId,
+        name: payload.userName || "Convidado",
+        email: null,
+        cpf: null,
+        historico: JSON.stringify([]),
+        pontos: 0,
+      });
+    }
+    // --------------------------------
+
     await db("orders").insert(newOrder);
-    // Opcional: Atualizar histórico do usuário aqui se necessário
     res.status(201).json({ ...newOrder, items: payload.items });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erro ao salvar pedido" });
+    console.error("Erro ao salvar pedido:", err); // Isso vai aparecer nos logs da Render
+    res.status(500).json({ error: "Erro ao processar pedido no servidor." });
   }
 });
 
@@ -331,4 +374,3 @@ initDatabase().then(() => {
     console.log(`✅ Servidor rodando na porta ${PORT}`);
   });
 });
-  
