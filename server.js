@@ -177,8 +177,6 @@ app.get("/api/force-seed", async (req, res) => {
 
 // --- APIs do Sistema ---
 
-JavaScript;
-
 // API Padrão
 app.get("/api/menu", async (req, res) => {
   try {
@@ -333,3 +331,4 @@ initDatabase().then(() => {
     console.log(`✅ Servidor rodando na porta ${PORT}`);
   });
 });
+  
