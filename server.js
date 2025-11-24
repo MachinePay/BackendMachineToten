@@ -33,7 +33,18 @@ const dbConfig = process.env.DATABASE_URL
 
 const db = knex(dbConfig);
 
-// Identificação visual do banco para a rota raiz
+// Helper para tratar JSON (Funciona no SQLite e Postgres)
+const parseJSON = (data) => {
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      return [];
+    }
+  }
+  return data || [];
+};
+
 const dbType = process.env.DATABASE_URL
   ? "PostgreSQL (Render)"
   : "SQLite (Local)";
@@ -43,7 +54,6 @@ console.log(`🗄️ Banco de dados conectado: ${dbType}`);
 async function initDatabase() {
   console.log("⏳ Verificando tabelas...");
 
-  // 1. Tabela de Produtos
   const hasProducts = await db.schema.hasTable("products");
   if (!hasProducts) {
     await db.schema.createTable("products", (table) => {
@@ -57,7 +67,6 @@ async function initDatabase() {
     });
   }
 
-  // 2. Tabela de Usuários
   const hasUsers = await db.schema.hasTable("users");
   if (!hasUsers) {
     await db.schema.createTable("users", (table) => {
@@ -70,7 +79,6 @@ async function initDatabase() {
     });
   }
 
-  // 3. Tabela de Pedidos
   const hasOrders = await db.schema.hasTable("orders");
   if (!hasOrders) {
     await db.schema.createTable("orders", (table) => {
@@ -89,7 +97,7 @@ async function initDatabase() {
     });
   }
 
-  // 4. Carregar Dados do Menu
+  // Seed Menu
   const result = await db("products").count("id as count").first();
   const count = result ? Number(result.count) : 0;
 
@@ -104,8 +112,6 @@ async function initDatabase() {
     } catch (e) {
       console.error("⚠️ Erro ao carregar menu.json:", e.message);
     }
-  } else {
-    console.log(`✅ O banco já contém ${count} produtos.`);
   }
 }
 
@@ -124,7 +130,7 @@ app.use(
       ) {
         return callback(null, true);
       }
-      callback(new Error("Not allowed by CORS"));
+      callback(null, true);
     },
     methods: ["GET", "POST", "DELETE", "PUT", "OPTIONS"],
     credentials: true,
@@ -135,16 +141,7 @@ app.use(express.json());
 // --- Rotas ---
 
 app.get("/", (req, res) => {
-  res.send(`
-    <div style="font-family: sans-serif; text-align: center; padding: 20px;">
-      <h1>Pastelaria Backend Online 🚀</h1>
-      <p>Status: <strong>Online</strong></p>
-      <p>Banco de Dados: <strong>${dbType}</strong></p>
-      <p>IA: <strong>${
-        openai ? "Ativa (GPT-4o-mini)" : "Desativada"
-      }</strong></p>
-    </div>
-  `);
+  res.send(`<h2>Pastelaria Backend Online 🚀</h2><p>Banco: ${dbType}</p>`);
 });
 
 app.get("/health", (req, res) => {
@@ -158,16 +155,13 @@ app.get("/api/force-seed", async (req, res) => {
     const MENU_DATA = JSON.parse(rawData);
     await db("products").del();
     await db("products").insert(MENU_DATA);
-    res.json({
-      message: "Menu recarregado com sucesso!",
-      count: MENU_DATA.length,
-    });
+    res.json({ message: "Menu recarregado!", count: MENU_DATA.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// --- APIs do Sistema ---
+// --- APIs do Sistema (COM CORREÇÕES) ---
 
 app.get("/api/menu", async (req, res) => {
   try {
@@ -184,12 +178,16 @@ app.get("/api/menu", async (req, res) => {
 });
 
 app.get("/api/users", async (req, res) => {
-  const users = await db("users").select("*");
-  const parsedUsers = users.map((u) => ({
-    ...u,
-    historico: JSON.parse(u.historico || "[]"),
-  }));
-  res.json(parsedUsers);
+  try {
+    const users = await db("users").select("*");
+    const parsedUsers = users.map((u) => ({
+      ...u,
+      historico: parseJSON(u.historico), // Usa o helper seguro
+    }));
+    res.json(parsedUsers);
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao buscar usuários" });
+  }
 });
 
 app.post("/api/users", async (req, res) => {
@@ -218,23 +216,28 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
+// Rota da Cozinha (CORRIGIDA)
 app.get("/api/orders", async (req, res) => {
-  const orders = await db("orders")
-    .where({ status: "active" })
-    .select("*")
-    .orderBy("timestamp", "asc");
-  const parsed = orders.map((o) => ({
-    ...o,
-    items: JSON.parse(o.items),
-    total: parseFloat(o.total),
-  }));
-  res.json(parsed);
+  try {
+    const orders = await db("orders")
+      .where({ status: "active" })
+      .select("*")
+      .orderBy("timestamp", "asc");
+
+    const parsed = orders.map((o) => ({
+      ...o,
+      items: parseJSON(o.items), // Usa o helper seguro
+      total: parseFloat(o.total),
+    }));
+    res.json(parsed);
+  } catch (err) {
+    console.error("Erro na rota GET /orders:", err);
+    res.status(500).json({ error: "Erro ao buscar pedidos" });
+  }
 });
 
-// Rota corrigida para evitar erro 500 no POST
 app.post("/api/orders", async (req, res) => {
   const payload = req.body;
-
   if (!payload || !payload.userId || !Array.isArray(payload.items)) {
     return res.status(400).json({ error: "Dados inválidos" });
   }
@@ -256,10 +259,9 @@ app.post("/api/orders", async (req, res) => {
   };
 
   try {
-    // Verifica e cria usuário se não existir (Convidado)
+    // Garante que usuário existe (fix erro FK Postgres)
     const userExists = await db("users").where({ id: payload.userId }).first();
     if (!userExists) {
-      console.log(`👤 Criando usuário convidado: ${payload.userId}`);
       await db("users").insert({
         id: payload.userId,
         name: payload.userName || "Convidado",
@@ -273,8 +275,8 @@ app.post("/api/orders", async (req, res) => {
     await db("orders").insert(newOrder);
     res.status(201).json({ ...newOrder, items: payload.items });
   } catch (err) {
-    console.error("Erro ao salvar pedido:", err);
-    res.status(500).json({ error: "Erro ao processar pedido no servidor." });
+    console.error("Erro no POST /orders:", err);
+    res.status(500).json({ error: "Erro ao processar pedido" });
   }
 });
 
@@ -289,69 +291,62 @@ app.delete("/api/orders/:id", async (req, res) => {
   }
 });
 
-// API User Orders (que estava dando erro no fetch)
+// Rota do Admin (CORRIGIDA)
 app.get("/api/user-orders", async (req, res) => {
-  const { userId } = req.query;
   try {
+    const { userId } = req.query;
     let query = db("orders").orderBy("timestamp", "desc");
-    if (userId) {
-      query = query.where({ userId });
-    }
+    if (userId) query = query.where({ userId });
+
     const allOrders = await query.select("*");
     const parsedOrders = allOrders.map((o) => ({
       ...o,
-      items: JSON.parse(o.items),
+      items: parseJSON(o.items), // Usa o helper seguro
       total: parseFloat(o.total),
     }));
     res.json(parsedOrders);
   } catch (err) {
-    console.error("Erro ao buscar user-orders:", err);
+    console.error("Erro GET /user-orders:", err);
     res.status(500).json({ error: "Erro ao buscar histórico" });
   }
 });
 
-// --- Rotas de IA ---
+// --- IA ---
 app.post("/api/ai/suggestion", async (req, res) => {
   if (!openai) return res.json({ text: "Experimente nosso Pastel de Carne!" });
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "Seja um garçom vendedor." },
+        { role: "system", content: "Vendedor." },
         { role: "user", content: req.body.prompt },
       ],
       max_tokens: 100,
     });
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    console.error(e);
-    res.json({ text: "Hoje recomendo o Pastel de Queijo!" });
+    res.json({ text: "Recomendo Pastel de Queijo!" });
   }
 });
 
 app.post("/api/ai/chat", async (req, res) => {
-  if (!openai) return res.status(503).json({ error: "IA Indisponível" });
+  if (!openai) return res.status(503).json({ error: "IA Off" });
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        {
-          role: "system",
-          content: "Atendente de pastelaria. Curto e amigável.",
-        },
+        { role: "system", content: "Atendente curto e amigável." },
         { role: "user", content: req.body.message },
       ],
       max_tokens: 150,
     });
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "Erro na IA" });
+    res.status(500).json({ error: "Erro IA" });
   }
 });
 
-// --- Inicialização com Tratamento de Erro ---
-console.log("🚀 Iniciando servidor...");
+// Inicialização
 initDatabase()
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => {
@@ -359,7 +354,6 @@ initDatabase()
     });
   })
   .catch((err) => {
-    console.error("❌ ERRO FATAL ao iniciar servidor:", err);
-    // O Render vai reiniciar o processo se ele sair, mas o log nos dirá o motivo
+    console.error("❌ ERRO FATAL:", err);
     process.exit(1);
   });
