@@ -348,7 +348,7 @@ app.post("/api/payment/create", async (req, res) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        amount: Math.round(amount * 100), // Valor em centavos? Verificar doc. Geralmente é valor decimal no Point.
+        amount: amount, // Envia 10.50 se o preço for R$ 10,50, // Valor em centavos? Verificar doc. Geralmente é valor decimal no Point.
         // Correção: Point API usa valor decimal normal, mas vamos garantir.
         // Na doc mais recente: "amount": 150.50
         // Se for integration-api, confirmar se aceita float.
