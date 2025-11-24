@@ -177,10 +177,20 @@ app.get("/api/force-seed", async (req, res) => {
 
 // --- APIs do Sistema ---
 
+JavaScript;
+
+// API Padrão
 app.get("/api/menu", async (req, res) => {
   try {
     const products = await db("products").select("*").orderBy("id");
-    res.json(products);
+
+    // CORREÇÃO: Converter 'price' de string para number
+    const parsedProducts = products.map((product) => ({
+      ...product,
+      price: parseFloat(product.price), // Garante que seja número
+    }));
+
+    res.json(parsedProducts);
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Erro ao buscar menu" });
