@@ -395,27 +395,32 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
+
     const data = await response.json();
+
+    // LOG PARA DEBUG (Vai aparecer no painel da Render)
     console.log(
-      `🔎 STATUS REAL DO MP (${paymentId}):`,
-      data.state,
-      "| Dados:",
-      JSON.stringify(data)
+      `🔎 STATUS MP (${paymentId}): Estado=${data.state} | IdPagamento=${
+        data.payment ? data.payment.id : "N/A"
+      }`
     );
 
+    // AQUI ESTÁ O SEGREDO:
+    // A API Point retorna "FINISHED" ou "PROCESSED" quando a maquininha termina.
+    // Se tiver isso, consideramos Aprovado para o Kiosk liberar a tela.
     if (data.state === "FINISHED" || data.state === "PROCESSED") {
-      // Verificar status exatos na doc
-      // Se aprovado, atualiza pedido
-      // Normalmente o status vem dentro de payment object
-      // Simplificação: se terminou, consideramos pago ou verificamos status
-
-      // IMPORTANTE: Para produção, verificar se status do pagamento é 'approved'
-      // Aqui assumimos sucesso se finished.
       return res.json({ status: "approved" });
     }
 
+    // Verificação extra: Se já tiver um objeto de pagamento aprovado dentro da resposta
+    if (data.payment && data.payment.status === "approved") {
+      return res.json({ status: "approved" });
+    }
+
+    // Se não for nenhum dos acima, ainda está pendente
     res.json({ status: "pending" });
   } catch (error) {
+    console.error("Erro status:", error);
     res.status(500).json({ error: "Erro ao verificar status" });
   }
 });
