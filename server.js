@@ -110,6 +110,8 @@ async function initDatabase() {
     } catch (e) {
       console.error("⚠️ Erro ao carregar menu.json:", e.message);
     }
+  } else {
+    console.log(`✅ O banco já contém ${result.count} produtos.`);
   }
 }
 
@@ -138,7 +140,9 @@ app.use(express.json());
 
 // --- Rotas Básicas ---
 app.get("/", (req, res) => {
-  res.send(`<h1>Backend KioskPro - VERSÃO ATUALIZADA (BUSCA DUPLA) 🚀</h1>`);
+  res.send(
+    `<h1>Backend KioskPro - VERSÃO CORREÇÃO FINAL (BUSCA POR VALOR) 🚀</h1>`
+  );
 });
 
 app.get("/health", (req, res) =>
@@ -265,7 +269,7 @@ app.get("/api/user-orders", async (req, res) => {
   }
 });
 
-// --- INTEGRAÇÃO MERCADO PAGO POINT (Robust V2) ---
+// --- INTEGRAÇÃO MERCADO PAGO POINT (Smart - Modo Robustez Total) ---
 
 app.post("/api/payment/create", async (req, res) => {
   const { amount, description, orderId } = req.body;
@@ -276,7 +280,7 @@ app.post("/api/payment/create", async (req, res) => {
   try {
     console.log(`💳 Iniciando pagamento de R$ ${amount} na maquininha...`);
 
-    // 1. Tenta limpar a fila antes (para evitar erro 409 de intent travada)
+    // 1. Tenta limpar a fila antes
     try {
       const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
       const listResp = await fetch(listUrl, {
@@ -286,7 +290,6 @@ app.post("/api/payment/create", async (req, res) => {
         const listData = await listResp.json();
         const events = listData.events || (listData.id ? [listData] : []);
         if (events.length > 0) {
-          console.log("🧹 Limpando pedidos antigos da fila...");
           for (const ev of events) {
             const iId = ev.payment_intent_id || ev.id;
             await fetch(`${listUrl}/${iId}`, {
@@ -300,8 +303,9 @@ app.post("/api/payment/create", async (req, res) => {
       /* ignore */
     }
 
-    // 2. Cria nova intent
+    // 2. Cria nova intent com o valor em centavos
     const url = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+    // Importante: passamos o valor original também no 'additional_info' para conferência
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -312,8 +316,9 @@ app.post("/api/payment/create", async (req, res) => {
         amount: Math.round(amount * 100), // Centavos
         description: description || `Pedido ${orderId}`,
         additional_info: {
-          external_reference: orderId, // Chave para a verificação dupla
+          external_reference: orderId,
           print_on_terminal: true,
+          original_amount: amount, // Guardamos o valor float para comparar depois
         },
       }),
     });
@@ -335,14 +340,14 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
   if (paymentId.startsWith("mock_pay")) return res.json({ status: "approved" });
 
   try {
-    // 1. Pergunta para a maquininha (Intent)
+    // 1. Pergunta para a maquininha
     const urlIntent = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
     const respIntent = await fetch(urlIntent, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
     const dataIntent = await respIntent.json();
 
-    console.log(`🔎 Status Intent: ${dataIntent.state}`); // SE APARECER ISSO NO LOG, O CÓDIGO ESTÁ ATUALIZADO
+    console.log(`🔎 Intent Status: ${dataIntent.state}`);
 
     if (dataIntent.state === "FINISHED" || dataIntent.state === "PROCESSED") {
       return res.json({ status: "approved" });
@@ -351,42 +356,42 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       return res.json({ status: "approved" });
     }
 
-    // 2. VERIFICAÇÃO DUPLA (Busca no Banco de Pagamentos)
-    if (
-      dataIntent.additional_info &&
-      dataIntent.additional_info.external_reference
-    ) {
-      const orderRef = dataIntent.additional_info.external_reference;
+    // 2. BUSCA POR VALOR (Já que a Referência vem vazia)
+    // Recuperamos o valor esperado da intent (que está em centavos) e convertemos para reais
+    const expectedAmount = dataIntent.amount ? dataIntent.amount / 100 : 0;
 
-      // Procura qualquer pagamento com essa referência (mesmo que não esteja 'approved' ainda, pra debug)
-      console.log(`🕵️ Buscando dinheiro para Ref: ${orderRef}...`); // LOG NOVO
+    if (expectedAmount > 0) {
+      console.log(
+        `🕵️ Buscando pagamento de R$ ${expectedAmount} nos últimos 10 min...`
+      );
 
-      const urlSearch = `https://api.mercadopago.com/v1/payments/search?external_reference=${orderRef}&sort=date_created&criteria=desc`;
+      // Busca os últimos 10 pagamentos
+      const urlSearch = `https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&limit=10&range=date_created:NOW-10MINUTES:NOW`;
       const respSearch = await fetch(urlSearch, {
         headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
       });
       const dataSearch = await respSearch.json();
       const payments = dataSearch.results || [];
 
-      if (payments.length > 0) {
-        const lastPay = payments[0];
-        console.log(
-          `💰 Encontrado Pagamento ID: ${lastPay.id} | Status: ${lastPay.status}`
-        );
+      // Procura algum pagamento APROVADO com o MESMO VALOR
+      const found = payments.find(
+        (p) =>
+          (p.status === "approved" || p.status === "authorized") &&
+          Math.abs(p.transaction_amount - expectedAmount) < 0.01 // Comparação segura de float
+      );
 
-        if (lastPay.status === "approved" || lastPay.status === "authorized") {
-          console.log("✅ PAGAMENTO CONFIRMADO! Liberando...");
+      if (found) {
+        console.log(`✅ PAGAMENTO ENCONTRADO POR VALOR! ID: ${found.id}`);
 
-          // Tenta matar a intent para destravar a tela da maquininha
-          try {
-            await fetch(urlIntent, {
-              method: "DELETE",
-              headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-            });
-          } catch (e) {}
+        // Destrava a maquininha
+        try {
+          await fetch(urlIntent, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          });
+        } catch (e) {}
 
-          return res.json({ status: "approved" });
-        }
+        return res.json({ status: "approved" });
       }
     }
 
@@ -397,10 +402,10 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
   }
 });
 
-// --- IA (Placeholder se sem cota) ---
+// --- IA ---
 app.post("/api/ai/suggestion", async (req, res) => {
+  if (!openai) return res.json({ text: "IA indisponível" });
   try {
-    if (!openai) throw new Error("No key");
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: req.body.prompt }],
@@ -408,12 +413,12 @@ app.post("/api/ai/suggestion", async (req, res) => {
     });
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    res.json({ text: "Sugestão indisponível (Cota excedida)." });
+    res.json({ text: "Sugestão indisponível." });
   }
 });
 app.post("/api/ai/chat", async (req, res) => {
+  if (!openai) return res.status(503).json({ error: "IA indisponível" });
   try {
-    if (!openai) throw new Error("No key");
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: req.body.message }],
@@ -421,7 +426,7 @@ app.post("/api/ai/chat", async (req, res) => {
     });
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    res.json({ text: "IA indisponível no momento." });
+    res.json({ text: "Erro na IA." });
   }
 });
 
