@@ -307,11 +307,21 @@ app.post("/api/payment/create", async (req, res) => {
       });
       if (listResp.ok) {
         const listData = await listResp.json();
-        const events = listData.events || [];
-        if (events.length > 0) {
-          console.log(`🧹 Limpando ${events.length} pedido(s) travado(s)...`);
-          for (const ev of events) {
-            await fetch(`${listUrl}/${ev.payment_intent_id}`, {
+        const events = listData.events || []; // Às vezes vem em 'events'
+        // Se vier um objeto direto (não array), tenta tratar
+        const items = Array.isArray(events)
+          ? events
+          : listData.id
+          ? [listData]
+          : [];
+
+        if (items.length > 0) {
+          console.log(
+            `🧹 Limpando ${items.length} pedido(s) travado(s) antes de iniciar...`
+          );
+          for (const ev of items) {
+            const intentId = ev.payment_intent_id || ev.id;
+            await fetch(`${listUrl}/${intentId}`, {
               method: "DELETE",
               headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
             });
@@ -319,9 +329,7 @@ app.post("/api/payment/create", async (req, res) => {
         }
       }
     } catch (e) {
-      console.log(
-        "⚠️ Aviso: Não foi possível limpar a fila (pode já estar vazia)."
-      );
+      /* Silencioso para não travar o fluxo novo */
     }
 
     // 2. Cria a nova intenção de pagamento
@@ -370,7 +378,7 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
     });
     const dataIntent = await respIntent.json();
 
-    // Cenário A: A maquininha já avisou que terminou
+    // Cenário A: Finalizado normal
     if (dataIntent.state === "FINISHED" || dataIntent.state === "PROCESSED") {
       console.log("✅ Aprovado via Intent State (FINISHED)");
       return res.json({ status: "approved" });
@@ -388,7 +396,7 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       dataIntent.additional_info.external_reference
     ) {
       const orderRef = dataIntent.additional_info.external_reference;
-      const urlSearch = `https://api.mercadopago.com/v1/payments/search?external_reference=${orderRef}&status=approved`;
+      const urlSearch = `https://api.mercadopago.com/v1/payments/search?external_reference=${orderRef}&status=approved&sort=date_created&criteria=desc`;
 
       const respSearch = await fetch(urlSearch, {
         headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
@@ -397,6 +405,20 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
 
       if (dataSearch.results && dataSearch.results.length > 0) {
         console.log("✅ Aprovado via Busca de Pagamento (Reference Check)!");
+
+        // AUTO-LIMPEZA: Se já pagou e a maquininha não liberou, mandamos cancelar a intent para destravar a tela
+        try {
+          console.log(
+            "🧹 Enviando comando de limpeza para destravar maquininha..."
+          );
+          await fetch(urlIntent, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          });
+        } catch (e) {
+          console.error("Erro ao limpar intent:", e);
+        }
+
         return res.json({ status: "approved" });
       }
     }
@@ -413,8 +435,7 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
 // --- Rotas de IA ---
 
 app.post("/api/ai/suggestion", async (req, res) => {
-  if (!openai)
-    return res.json({ text: "IA indisponível (Sem créditos ou chave)" });
+  if (!openai) return res.json({ text: "IA indisponível" });
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -437,7 +458,7 @@ app.post("/api/ai/chat", async (req, res) => {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "Atendente curto." },
+        { role: "system", content: "Atendente." },
         { role: "user", content: req.body.message },
       ],
       max_tokens: 150,
