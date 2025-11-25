@@ -396,6 +396,12 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
     const data = await response.json();
+    console.log(
+      `🔎 STATUS REAL DO MP (${paymentId}):`,
+      data.state,
+      "| Dados:",
+      JSON.stringify(data)
+    );
 
     if (data.state === "FINISHED" || data.state === "PROCESSED") {
       // Verificar status exatos na doc
