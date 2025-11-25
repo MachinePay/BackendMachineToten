@@ -101,21 +101,17 @@ async function initDatabase() {
   }
 
   const result = await db("products").count("id as count").first();
-  const count = result ? Number(result.count) : 0;
-
-  if (count === 0) {
-    console.log("🛠️ Banco vazio! Carregando menu.json...");
-    const menuDataPath = path.join(process.cwd(), "data", "menu.json");
+  if (Number(result.count) === 0) {
     try {
+      const menuDataPath = path.join(process.cwd(), "data", "menu.json");
       const rawData = await fs.readFile(menuDataPath, "utf-8");
-      const MENU_DATA = JSON.parse(rawData);
-      await db("products").insert(MENU_DATA);
+      await db("products").insert(JSON.parse(rawData));
       console.log("✅ Menu carregado com sucesso!");
     } catch (e) {
       console.error("⚠️ Erro ao carregar menu.json:", e.message);
     }
   } else {
-    console.log(`✅ O banco já contém ${count} produtos.`);
+    console.log(`✅ O banco já contém ${result.count} produtos.`);
   }
 }
 
@@ -144,20 +140,14 @@ app.use(express.json());
 
 // --- Rotas Básicas ---
 app.get("/", (req, res) => {
-  res.send(`
-    <div style="font-family: sans-serif; text-align: center; padding: 20px;">
-      <h1>Pastelaria Backend Online 🚀</h1>
-      <p>Banco: <strong>${dbType}</strong></p>
-      <p>Status: <strong>OPERACIONAL</strong></p>
-    </div>
-  `);
+  res.send(`<h1>Pastelaria Backend Online 🚀</h1><p>Banco: ${dbType}</p>`);
 });
 
 app.get("/health", (req, res) =>
   res.status(200).json({ status: "ok", db: dbType })
 );
 
-// --- Rotas da API (Menu, Usuários, Pedidos) ---
+// --- Rotas da API ---
 
 app.get("/api/menu", async (req, res) => {
   try {
@@ -219,7 +209,7 @@ app.get("/api/orders", async (req, res) => {
 });
 
 app.post("/api/orders", async (req, res) => {
-  const { userId, userName, items, total, paymentMethod, paymentId } = req.body;
+  const { userId, userName, items, total, paymentId } = req.body;
 
   const newOrder = {
     id: `order_${Date.now()}`,
@@ -234,7 +224,6 @@ app.post("/api/orders", async (req, res) => {
   };
 
   try {
-    // Garante que o usuário existe (para convidados)
     const userExists = await db("users").where({ id: userId }).first();
     if (!userExists) {
       await db("users").insert({
@@ -307,19 +296,14 @@ app.post("/api/payment/create", async (req, res) => {
       });
       if (listResp.ok) {
         const listData = await listResp.json();
-        const events = listData.events || []; // Às vezes vem em 'events'
-        // Se vier um objeto direto (não array), tenta tratar
-        const items = Array.isArray(events)
-          ? events
-          : listData.id
-          ? [listData]
-          : [];
+        // Tratamento para diferentes formatos de resposta da API
+        const events = listData.events || (listData.id ? [listData] : []);
 
-        if (items.length > 0) {
+        if (events.length > 0) {
           console.log(
-            `🧹 Limpando ${items.length} pedido(s) travado(s) antes de iniciar...`
+            `🧹 Limpando ${events.length} pedido(s) travado(s) antes de iniciar...`
           );
-          for (const ev of items) {
+          for (const ev of events) {
             const intentId = ev.payment_intent_id || ev.id;
             await fetch(`${listUrl}/${intentId}`, {
               method: "DELETE",
@@ -329,7 +313,7 @@ app.post("/api/payment/create", async (req, res) => {
         }
       }
     } catch (e) {
-      /* Silencioso para não travar o fluxo novo */
+      /* Silencioso */
     }
 
     // 2. Cria a nova intenção de pagamento
@@ -353,7 +337,7 @@ app.post("/api/payment/create", async (req, res) => {
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("Erro MP:", data);
+      console.error("Erro MP Create:", data);
       throw new Error(data.message || "Erro ao criar pagamento no MP");
     }
 
@@ -378,62 +362,74 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
     });
     const dataIntent = await respIntent.json();
 
-    // Cenário A: Finalizado normal
+    console.log(`🔎 Status Intent: ${dataIntent.state}`);
+
+    // Cenário A: Finalizado normal pela API da Point
     if (dataIntent.state === "FINISHED" || dataIntent.state === "PROCESSED") {
-      console.log("✅ Aprovado via Intent State (FINISHED)");
+      console.log("✅ Aprovado via Intent State");
       return res.json({ status: "approved" });
     }
-    // Cenário B: A maquininha já mandou o ID do pagamento
     if (dataIntent.payment && dataIntent.payment.id) {
       console.log("✅ Aprovado via Payment ID na Intent");
       return res.json({ status: "approved" });
     }
 
-    // 2. VERIFICAÇÃO DUPLA (Pulo do Gato)
-    // Se a maquininha estiver lenta (ON_TERMINAL) mas o dinheiro já entrou, buscamos pelo ID do pedido
+    // 2. VERIFICAÇÃO DUPLA (Busca Inteligente)
+    // Se a maquininha estiver lenta (ON_TERMINAL) ou já tiver cancelado (CANCELED) mas o dinheiro entrou:
     if (
       dataIntent.additional_info &&
       dataIntent.additional_info.external_reference
     ) {
       const orderRef = dataIntent.additional_info.external_reference;
-      const urlSearch = `https://api.mercadopago.com/v1/payments/search?external_reference=${orderRef}&status=approved&sort=date_created&criteria=desc`;
+
+      // Log para debug
+      console.log(`🕵️ Buscando dinheiro para Ref: ${orderRef}...`);
+
+      // Removemos o filtro &status=approved para ver TUDO que existe com esse ID
+      const urlSearch = `https://api.mercadopago.com/v1/payments/search?external_reference=${orderRef}&sort=date_created&criteria=desc`;
 
       const respSearch = await fetch(urlSearch, {
         headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
       });
       const dataSearch = await respSearch.json();
 
-      if (dataSearch.results && dataSearch.results.length > 0) {
-        console.log("✅ Aprovado via Busca de Pagamento (Reference Check)!");
+      const payments = dataSearch.results || [];
+      console.log(`💰 Encontrados: ${payments.length} pagamentos.`);
 
-        // AUTO-LIMPEZA: Se já pagou e a maquininha não liberou, mandamos cancelar a intent para destravar a tela
-        try {
-          console.log(
-            "🧹 Enviando comando de limpeza para destravar maquininha..."
-          );
-          await fetch(urlIntent, {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-          });
-        } catch (e) {
-          console.error("Erro ao limpar intent:", e);
+      if (payments.length > 0) {
+        const lastPayment = payments[0];
+        console.log(
+          `➡️ Último Pgto: Status=${lastPayment.status} | ID=${lastPayment.id}`
+        );
+
+        // Aceitamos approved e authorized
+        if (
+          lastPayment.status === "approved" ||
+          lastPayment.status === "authorized"
+        ) {
+          console.log("✅ PAGAMENTO LOCALIZADO! Liberando pedido...");
+
+          // Tenta limpar a maquininha para ela parar de pedir
+          try {
+            await fetch(urlIntent, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+            });
+          } catch (e) {}
+
+          return res.json({ status: "approved" });
         }
-
-        return res.json({ status: "approved" });
       }
     }
 
-    console.log(`⏳ Status Pendente: ${dataIntent.state}`);
     res.json({ status: "pending" });
   } catch (error) {
     console.error("Erro Status:", error);
-    // Retorna pending para não quebrar o loop do frontend
     res.json({ status: "pending" });
   }
 });
 
 // --- Rotas de IA ---
-
 app.post("/api/ai/suggestion", async (req, res) => {
   if (!openai) return res.json({ text: "IA indisponível" });
   try {
@@ -447,8 +443,7 @@ app.post("/api/ai/suggestion", async (req, res) => {
     });
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    console.error("Erro OpenAI:", e);
-    res.json({ text: "Sugestão indisponível no momento." });
+    res.json({ text: "Sugestão indisponível." });
   }
 });
 
@@ -465,20 +460,13 @@ app.post("/api/ai/chat", async (req, res) => {
     });
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    console.error("Erro OpenAI:", e);
-    res.json({ text: "Desculpe, estou com problemas de conexão." });
+    res.json({ text: "Erro na IA." });
   }
 });
 
 // --- Inicialização ---
-console.log("🚀 Iniciando servidor...");
-initDatabase()
-  .then(() => {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`✅ Servidor rodando na porta ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error("❌ ERRO FATAL ao iniciar servidor:", err);
-    process.exit(1);
-  });
+initDatabase().then(() => {
+  app.listen(PORT, "0.0.0.0", () =>
+    console.log(`✅ Server running on port ${PORT}`)
+  );
+});
