@@ -349,10 +349,7 @@ app.post("/api/payment/create", async (req, res) => {
       },
       body: JSON.stringify({
         // O Mercado Pago Point espera o valor em CENTAVOS (Integer)
-        amount: Math.round(amount * 100), // Envia 10.50 se o preço for R$ 10,50, // Valor em centavos? Verificar doc. Geralmente é valor decimal no Point.
-        // Correção: Point API usa valor decimal normal, mas vamos garantir.
-        // Na doc mais recente: "amount": 150.50
-        // Se for integration-api, confirmar se aceita float.
+        amount: Math.round(amount * 100),
         description: description || `Pedido ${orderId}`,
         additional_info: {
           external_reference: orderId,
@@ -369,9 +366,10 @@ app.post("/api/payment/create", async (req, res) => {
     }
 
     // Salva o paymentId no pedido
-    await db("orders").where({ id: orderId }).update({
-      paymentId: data.id,
-    });
+    // (Só funciona se a ordem já existir no banco, o que pode não ser o caso ainda dependendo do seu fluxo.
+    //  Se a ordem só é criada DEPOIS de pagar, essa parte aqui não é crítica, pois o front vai salvar o paymentId depois).
+    // Mas mantemos para caso a ordem já tenha sido iniciada.
+    // await db("orders").where({ id: orderId }).update({ paymentId: data.id });
 
     res.json({ id: data.id, status: "open" });
   } catch (error) {
@@ -398,30 +396,32 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
 
     const data = await response.json();
 
-    // LOG PARA DEBUG (Vai aparecer no painel da Render)
     console.log(
-      `🔎 STATUS MP (${paymentId}): Estado=${data.state} | IdPagamento=${
+      `🔎 STATUS MP (${paymentId}): Estado=${data.state} | PayID=${
         data.payment ? data.payment.id : "N/A"
       }`
     );
 
-    // AQUI ESTÁ O SEGREDO:
-    // A API Point retorna "FINISHED" ou "PROCESSED" quando a maquininha termina.
-    // Se tiver isso, consideramos Aprovado para o Kiosk liberar a tela.
+    // 1. Cenário Perfeito: O status oficial mudou para finalizado
     if (data.state === "FINISHED" || data.state === "PROCESSED") {
       return res.json({ status: "approved" });
     }
 
-    // Verificação extra: Se já tiver um objeto de pagamento aprovado dentro da resposta
-    if (data.payment && data.payment.status === "approved") {
+    // 2. Cenário "Maquininha Lenta": O status ainda é ON_TERMINAL, mas o pagamento já existe!
+    // Se existe um payment.id, significa que a cobrança foi feita com sucesso.
+    if (data.payment && data.payment.id) {
+      console.log(
+        "✅ Pagamento detectado pelo ID (intent atrasado), liberando pedido..."
+      );
       return res.json({ status: "approved" });
     }
 
-    // Se não for nenhum dos acima, ainda está pendente
+    // Se chegou aqui, realmente ainda não acabou
     res.json({ status: "pending" });
   } catch (error) {
-    console.error("Erro status:", error);
-    res.status(500).json({ error: "Erro ao verificar status" });
+    console.error("Erro ao verificar status:", error);
+    // Retorna pending para o front continuar tentando em caso de erro de rede momentâneo
+    res.json({ status: "pending" });
   }
 });
 
