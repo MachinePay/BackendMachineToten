@@ -4,21 +4,19 @@ import path from "path";
 import cors from "cors";
 import OpenAI from "openai";
 import knex from "knex";
-// import "sqlite3"; // Mantenha comentado para evitar erros no Render
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// --- Configuração da IA (OpenAI) ---
+// --- Configurações ---
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
 
-// --- Configuração Mercado Pago ---
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
 const MP_DEVICE_ID = process.env.MP_DEVICE_ID;
 
-// --- CONFIGURAÇÃO DO BANCO DE DADOS ---
+// --- Banco de Dados ---
 const dbConfig = process.env.DATABASE_URL
   ? {
       client: "pg",
@@ -37,7 +35,6 @@ const dbConfig = process.env.DATABASE_URL
 
 const db = knex(dbConfig);
 
-// Helper para tratar JSON (Funciona no SQLite e Postgres)
 const parseJSON = (data) => {
   if (typeof data === "string") {
     try {
@@ -54,11 +51,10 @@ const dbType = process.env.DATABASE_URL
   : "SQLite (Local)";
 console.log(`🗄️ Banco de dados conectado: ${dbType}`);
 
-// --- SEED: Função para inicializar o banco ---
+// --- Inicialização do Banco (SEED) ---
 async function initDatabase() {
   console.log("⏳ Verificando tabelas...");
 
-  // Tabela de Produtos
   const hasProducts = await db.schema.hasTable("products");
   if (!hasProducts) {
     await db.schema.createTable("products", (table) => {
@@ -72,7 +68,6 @@ async function initDatabase() {
     });
   }
 
-  // Tabela de Usuários
   const hasUsers = await db.schema.hasTable("users");
   if (!hasUsers) {
     await db.schema.createTable("users", (table) => {
@@ -85,7 +80,6 @@ async function initDatabase() {
     });
   }
 
-  // Tabela de Pedidos
   const hasOrders = await db.schema.hasTable("orders");
   if (!hasOrders) {
     await db.schema.createTable("orders", (table) => {
@@ -99,14 +93,13 @@ async function initDatabase() {
       table.decimal("total", 8, 2).notNullable();
       table.string("timestamp").notNullable();
       table.string("status").defaultTo("active");
-      table.string("paymentStatus").defaultTo("pending"); // Adicionado status de pagamento
-      table.string("paymentId"); // ID do pagamento no MP
+      table.string("paymentStatus").defaultTo("pending");
+      table.string("paymentId");
       table.json("items").notNullable();
       table.timestamp("completedAt");
     });
   }
 
-  // Carregar Dados do Menu se estiver vazio
   const result = await db("products").count("id as count").first();
   const count = result ? Number(result.count) : 0;
 
@@ -133,7 +126,7 @@ const allowedOrigins = process.env.FRONTEND_URL
 
 app.use(
   cors({
-    origin: function (origin, callback) {
+    origin: (origin, callback) => {
       if (
         !origin ||
         allowedOrigins.includes("*") ||
@@ -149,47 +142,28 @@ app.use(
 );
 app.use(express.json());
 
-// --- Rotas Gerais ---
-
+// --- Rotas Básicas ---
 app.get("/", (req, res) => {
   res.send(`
     <div style="font-family: sans-serif; text-align: center; padding: 20px;">
       <h1>Pastelaria Backend Online 🚀</h1>
       <p>Banco: <strong>${dbType}</strong></p>
-      <p>Modo Debug IA: <strong>ATIVADO</strong> (Erros aparecerão na tela)</p>
+      <p>Status: <strong>OPERACIONAL</strong></p>
     </div>
   `);
 });
 
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", db: dbType });
-});
+app.get("/health", (req, res) =>
+  res.status(200).json({ status: "ok", db: dbType })
+);
 
-app.get("/api/force-seed", async (req, res) => {
-  try {
-    const menuDataPath = path.join(process.cwd(), "data", "menu.json");
-    const rawData = await fs.readFile(menuDataPath, "utf-8");
-    const MENU_DATA = JSON.parse(rawData);
-    await db("products").del();
-    await db("products").insert(MENU_DATA);
-    res.json({ message: "Menu recarregado!", count: MENU_DATA.length });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// --- APIs do Sistema ---
+// --- Rotas da API (Menu, Usuários, Pedidos) ---
 
 app.get("/api/menu", async (req, res) => {
   try {
     const products = await db("products").select("*").orderBy("id");
-    const parsedProducts = products.map((product) => ({
-      ...product,
-      price: parseFloat(product.price),
-    }));
-    res.json(parsedProducts);
+    res.json(products.map((p) => ({ ...p, price: parseFloat(p.price) })));
   } catch (e) {
-    console.error(e);
     res.status(500).json({ error: "Erro ao buscar menu" });
   }
 });
@@ -197,38 +171,32 @@ app.get("/api/menu", async (req, res) => {
 app.get("/api/users", async (req, res) => {
   try {
     const users = await db("users").select("*");
-    const parsedUsers = users.map((u) => ({
-      ...u,
-      historico: parseJSON(u.historico),
-    }));
-    res.json(parsedUsers);
+    res.json(users.map((u) => ({ ...u, historico: parseJSON(u.historico) })));
   } catch (e) {
     res.status(500).json({ error: "Erro ao buscar usuários" });
   }
 });
 
 app.post("/api/users", async (req, res) => {
-  const payload = req.body;
-  if (!payload || !payload.cpf)
-    return res.status(400).json({ error: "CPF obrigatório" });
+  const { cpf, name, email, id } = req.body;
+  if (!cpf) return res.status(400).json({ error: "CPF obrigatório" });
+  const cpfClean = String(cpf).replace(/\D/g, "");
 
-  const cpfLimpo = String(payload.cpf).replace(/\D/g, "");
   try {
-    const exists = await db("users").where({ cpf: cpfLimpo }).first();
+    const exists = await db("users").where({ cpf: cpfClean }).first();
     if (exists) return res.status(409).json({ error: "CPF já cadastrado" });
 
     const newUser = {
-      id: payload.id || `user_${Date.now()}`,
-      name: payload.name || "Sem Nome",
-      email: payload.email || "",
-      cpf: cpfLimpo,
+      id: id || `user_${Date.now()}`,
+      name: name || "Sem Nome",
+      email: email || "",
+      cpf: cpfClean,
       historico: JSON.stringify([]),
       pontos: 0,
     };
     await db("users").insert(newUser);
     res.status(201).json({ ...newUser, historico: [] });
-  } catch (err) {
-    console.error(err);
+  } catch (e) {
     res.status(500).json({ error: "Erro ao salvar usuário" });
   }
 });
@@ -237,62 +205,53 @@ app.get("/api/orders", async (req, res) => {
   try {
     const orders = await db("orders")
       .where({ status: "active" })
-      .select("*")
       .orderBy("timestamp", "asc");
-
-    const parsed = orders.map((o) => ({
-      ...o,
-      items: parseJSON(o.items),
-      total: parseFloat(o.total),
-    }));
-    res.json(parsed);
-  } catch (err) {
-    console.error("Erro na rota GET /orders:", err);
+    res.json(
+      orders.map((o) => ({
+        ...o,
+        items: parseJSON(o.items),
+        total: parseFloat(o.total),
+      }))
+    );
+  } catch (e) {
     res.status(500).json({ error: "Erro ao buscar pedidos" });
   }
 });
 
 app.post("/api/orders", async (req, res) => {
-  const payload = req.body;
-  if (!payload || !payload.userId || !Array.isArray(payload.items)) {
-    return res.status(400).json({ error: "Dados inválidos" });
-  }
-
-  const id = `order_${Date.now()}`;
-  const total =
-    typeof payload.total === "number"
-      ? payload.total
-      : (payload.items || []).reduce((acc, i) => acc + i.price * i.quantity, 0);
+  const { userId, userName, items, total, paymentMethod, paymentId } = req.body;
 
   const newOrder = {
-    id,
-    userId: payload.userId,
-    userName: payload.userName || "Cliente",
-    items: JSON.stringify(payload.items),
-    total,
+    id: `order_${Date.now()}`,
+    userId,
+    userName: userName || "Cliente",
+    items: JSON.stringify(items || []),
+    total: total || 0,
     timestamp: new Date().toISOString(),
     status: "active",
-    paymentStatus: "pending", // Inicia pendente até pagar
+    paymentStatus: "paid", // Assumimos pago pois o frontend só chama após sucesso
+    paymentId: paymentId || null,
   };
 
   try {
-    const userExists = await db("users").where({ id: payload.userId }).first();
+    // Garante que o usuário existe (para convidados)
+    const userExists = await db("users").where({ id: userId }).first();
     if (!userExists) {
       await db("users").insert({
-        id: payload.userId,
-        name: payload.userName || "Convidado",
+        id: userId,
+        name: userName || "Convidado",
         email: null,
         cpf: null,
-        historico: JSON.stringify([]),
+        historico: "[]",
         pontos: 0,
       });
     }
 
     await db("orders").insert(newOrder);
-    res.status(201).json({ ...newOrder, items: payload.items });
-  } catch (err) {
-    console.error("Erro no POST /orders:", err);
-    res.status(500).json({ error: "Erro ao processar pedido" });
+    res.status(201).json({ ...newOrder, items: items || [] });
+  } catch (e) {
+    console.error("Erro salvar ordem:", e);
+    res.status(500).json({ error: "Erro ao salvar ordem" });
   }
 });
 
@@ -303,7 +262,7 @@ app.delete("/api/orders/:id", async (req, res) => {
       .update({ status: "completed", completedAt: new Date().toISOString() });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: "Erro ao finalizar pedido" });
+    res.status(500).json({ error: "Erro ao finalizar" });
   }
 });
 
@@ -312,35 +271,61 @@ app.get("/api/user-orders", async (req, res) => {
     const { userId } = req.query;
     let query = db("orders").orderBy("timestamp", "desc");
     if (userId) query = query.where({ userId });
-
     const allOrders = await query.select("*");
-    const parsedOrders = allOrders.map((o) => ({
-      ...o,
-      items: parseJSON(o.items),
-      total: parseFloat(o.total),
-    }));
-    res.json(parsedOrders);
+    res.json(
+      allOrders.map((o) => ({
+        ...o,
+        items: parseJSON(o.items),
+        total: parseFloat(o.total),
+      }))
+    );
   } catch (err) {
-    console.error("Erro GET /user-orders:", err);
-    res.status(500).json({ error: "Erro ao buscar histórico" });
+    res.status(500).json({ error: "Erro histórico" });
   }
 });
 
-// --- Integração Mercado Pago Point ---
+// --- INTEGRAÇÃO MERCADO PAGO POINT (Smart) ---
 
 app.post("/api/payment/create", async (req, res) => {
   const { amount, description, orderId } = req.body;
 
   if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
     console.error("Faltam credenciais do Mercado Pago");
-    // Simulação para testes se não tiver credenciais
     return res.json({ id: `mock_pay_${Date.now()}`, status: "pending" });
   }
 
   try {
-    // Cria a intenção de pagamento na maquininha
-    const url = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+    console.log(
+      `💳 Iniciando pagamento de R$ ${amount} na maquininha ${MP_DEVICE_ID}...`
+    );
 
+    // 1. Tenta limpar a fila de intents anteriores para evitar erro 409
+    try {
+      const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+      const listResp = await fetch(listUrl, {
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+      if (listResp.ok) {
+        const listData = await listResp.json();
+        const events = listData.events || [];
+        if (events.length > 0) {
+          console.log(`🧹 Limpando ${events.length} pedido(s) travado(s)...`);
+          for (const ev of events) {
+            await fetch(`${listUrl}/${ev.payment_intent_id}`, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.log(
+        "⚠️ Aviso: Não foi possível limpar a fila (pode já estar vazia)."
+      );
+    }
+
+    // 2. Cria a nova intenção de pagamento
+    const url = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -348,11 +333,10 @@ app.post("/api/payment/create", async (req, res) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        // O Mercado Pago Point espera o valor em CENTAVOS (Integer)
-        amount: Math.round(amount * 100),
+        amount: Math.round(amount * 100), // Valor em Centavos
         description: description || `Pedido ${orderId}`,
         additional_info: {
-          external_reference: orderId,
+          external_reference: orderId, // Importante para a verificação dupla
           print_on_terminal: true,
         },
       }),
@@ -365,12 +349,6 @@ app.post("/api/payment/create", async (req, res) => {
       throw new Error(data.message || "Erro ao criar pagamento no MP");
     }
 
-    // Salva o paymentId no pedido
-    // (Só funciona se a ordem já existir no banco, o que pode não ser o caso ainda dependendo do seu fluxo.
-    //  Se a ordem só é criada DEPOIS de pagar, essa parte aqui não é crítica, pois o front vai salvar o paymentId depois).
-    // Mas mantemos para caso a ordem já tenha sido iniciada.
-    // await db("orders").where({ id: orderId }).update({ paymentId: data.id });
-
     res.json({ id: data.id, status: "open" });
   } catch (error) {
     console.error("Erro Pagamento:", error);
@@ -381,55 +359,62 @@ app.post("/api/payment/create", async (req, res) => {
 app.get("/api/payment/status/:paymentId", async (req, res) => {
   const { paymentId } = req.params;
 
-  // Simulação de sucesso para testes
-  if (paymentId.startsWith("mock_pay")) {
-    return res.json({ status: "approved" });
-  }
-
+  if (paymentId.startsWith("mock_pay")) return res.json({ status: "approved" });
   if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token MP" });
 
   try {
-    const url = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
-    const response = await fetch(url, {
+    // 1. Verifica o status da "Intenção" (Comando na maquininha)
+    const urlIntent = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
+    const respIntent = await fetch(urlIntent, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
+    const dataIntent = await respIntent.json();
 
-    const data = await response.json();
-
-    console.log(
-      `🔎 STATUS MP (${paymentId}): Estado=${data.state} | PayID=${
-        data.payment ? data.payment.id : "N/A"
-      }`
-    );
-
-    // 1. Cenário Perfeito: O status oficial mudou para finalizado
-    if (data.state === "FINISHED" || data.state === "PROCESSED") {
+    // Cenário A: A maquininha já avisou que terminou
+    if (dataIntent.state === "FINISHED" || dataIntent.state === "PROCESSED") {
+      console.log("✅ Aprovado via Intent State (FINISHED)");
+      return res.json({ status: "approved" });
+    }
+    // Cenário B: A maquininha já mandou o ID do pagamento
+    if (dataIntent.payment && dataIntent.payment.id) {
+      console.log("✅ Aprovado via Payment ID na Intent");
       return res.json({ status: "approved" });
     }
 
-    // 2. Cenário "Maquininha Lenta": O status ainda é ON_TERMINAL, mas o pagamento já existe!
-    // Se existe um payment.id, significa que a cobrança foi feita com sucesso.
-    if (data.payment && data.payment.id) {
-      console.log(
-        "✅ Pagamento detectado pelo ID (intent atrasado), liberando pedido..."
-      );
-      return res.json({ status: "approved" });
+    // 2. VERIFICAÇÃO DUPLA (Pulo do Gato)
+    // Se a maquininha estiver lenta (ON_TERMINAL) mas o dinheiro já entrou, buscamos pelo ID do pedido
+    if (
+      dataIntent.additional_info &&
+      dataIntent.additional_info.external_reference
+    ) {
+      const orderRef = dataIntent.additional_info.external_reference;
+      const urlSearch = `https://api.mercadopago.com/v1/payments/search?external_reference=${orderRef}&status=approved`;
+
+      const respSearch = await fetch(urlSearch, {
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+      const dataSearch = await respSearch.json();
+
+      if (dataSearch.results && dataSearch.results.length > 0) {
+        console.log("✅ Aprovado via Busca de Pagamento (Reference Check)!");
+        return res.json({ status: "approved" });
+      }
     }
 
-    // Se chegou aqui, realmente ainda não acabou
+    console.log(`⏳ Status Pendente: ${dataIntent.state}`);
     res.json({ status: "pending" });
   } catch (error) {
-    console.error("Erro ao verificar status:", error);
-    // Retorna pending para o front continuar tentando em caso de erro de rede momentâneo
+    console.error("Erro Status:", error);
+    // Retorna pending para não quebrar o loop do frontend
     res.json({ status: "pending" });
   }
 });
 
-// --- Rotas de IA (MODO DEBUG ATIVADO) ---
+// --- Rotas de IA ---
 
 app.post("/api/ai/suggestion", async (req, res) => {
   if (!openai)
-    return res.json({ text: "ERRO: Chave API não configurada no .env" });
+    return res.json({ text: "IA indisponível (Sem créditos ou chave)" });
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -442,12 +427,12 @@ app.post("/api/ai/suggestion", async (req, res) => {
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
     console.error("Erro OpenAI:", e);
-    res.json({ text: `ERRO DA API (DEBUG): ${e.message}` });
+    res.json({ text: "Sugestão indisponível no momento." });
   }
 });
 
 app.post("/api/ai/chat", async (req, res) => {
-  if (!openai) return res.status(503).json({ error: "IA não configurada" });
+  if (!openai) return res.status(503).json({ error: "IA indisponível" });
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -460,7 +445,7 @@ app.post("/api/ai/chat", async (req, res) => {
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
     console.error("Erro OpenAI:", e);
-    res.json({ text: `ERRO DA API (DEBUG): ${e.message}` });
+    res.json({ text: "Desculpe, estou com problemas de conexão." });
   }
 });
 
