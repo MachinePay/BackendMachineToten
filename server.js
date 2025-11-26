@@ -592,11 +592,15 @@ app.post("/api/payment/create-pix", async (req, res) => {
       }
     };
 
+    // Gera chave idempotente única para esta transação PIX
+    const idempotencyKey = `pix_${orderId}_${Date.now()}`;
+
     const response = await fetch('https://api.mercadopago.com/v1/orders', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
         'Content-Type': 'application/json',
+        'X-Idempotency-Key': idempotencyKey, // ← OBRIGATÓRIO
       },
       body: JSON.stringify(orderPayload),
     });
@@ -668,11 +672,15 @@ app.post("/api/payment/create", async (req, res) => {
 
     console.log(`📤 Payload Order (Point):`, JSON.stringify(orderPayload, null, 2));
 
+    // Gera chave idempotente única para esta transação
+    const idempotencyKey = `${orderId}_${Date.now()}`;
+
     const response = await fetch('https://api.mercadopago.com/v1/orders', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
         'Content-Type': 'application/json',
+        'X-Idempotency-Key': idempotencyKey, // ← OBRIGATÓRIO
         'X-Device-Id': MP_DEVICE_ID // Identifica a maquininha
       },
       body: JSON.stringify(orderPayload),
