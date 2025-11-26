@@ -476,7 +476,7 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
 
     console.log(`💭 Cache miss - consultando API do MP...`);
 
-    // Verifica se há payment.id diretamente na intent
+    // 2. Verifica se há payment.id diretamente na intent (PRIORIDADE)
     if (dataIntent.payment && dataIntent.payment.id) {
       console.log(`✅ Payment ID encontrado na intent: ${dataIntent.payment.id}`);
       
@@ -492,6 +492,11 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       }
       
       return res.json({ status: "approved", paymentId: dataIntent.payment.id });
+    }
+    
+    // 3. Verifica se a intent tem ID de payment nos detalhes adicionais
+    if (dataIntent.additional_info?.external_reference) {
+      console.log(`🔍 Buscando por external_reference: ${dataIntent.additional_info.external_reference}`);
     }
 
     // Verifica estados finalizados
@@ -514,27 +519,34 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
     if (intentAmount > 0) {
       const expectedAmountFloat = intentAmount / 100;
       console.log(
-        `🕵️ Buscando pagamento de R$ ${expectedAmountFloat.toFixed(2)} nos últimos 15 min...`
+        `🕵️ Buscando pagamento de R$ ${expectedAmountFloat.toFixed(2)} nos últimos 30 min...`
       );
 
-      // Busca nos últimos 15 minutos (mais tempo para capturar)
-      const urlSearch = `https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&limit=20&range=date_created:NOW-15MINUTES:NOW`;
+      // Busca nos últimos 30 minutos com mais resultados
+      const urlSearch = `https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&limit=50&range=date_created:NOW-30MINUTES:NOW&status=approved`;
       const respSearch = await fetch(urlSearch, {
         headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
       });
       const dataSearch = await respSearch.json();
       const payments = dataSearch.results || [];
 
-      console.log(`📋 Encontrados ${payments.length} pagamentos recentes`);
+      console.log(`📋 Encontrados ${payments.length} pagamentos APROVADOS recentes`);
+      
+      // Mostra TODOS os pagamentos para debug
+      if (payments.length > 0) {
+        console.log(`\n📊 Listando todos os pagamentos encontrados:`);
+        payments.slice(0, 10).forEach((p, idx) => {
+          const amountInCents = Math.round(p.transaction_amount * 100);
+          const match = amountInCents === intentAmount ? "✅ MATCH!" : "";
+          console.log(`  ${idx + 1}. ID: ${p.id} | R$ ${p.transaction_amount} (${amountInCents} centavos) | Status: ${p.status} | Método: ${p.payment_method_id || 'N/A'} ${match}`);
+        });
+        console.log(`\n`);
+      }
 
       // Procura pagamento aprovado com MESMO VALOR
       const found = payments.find((p) => {
         const amountMatch = Math.round(p.transaction_amount * 100) === intentAmount;
         const statusApproved = p.status === "approved" || p.status === "authorized";
-        
-        if (amountMatch) {
-          console.log(`💰 Pagamento ${p.id}: R$ ${p.transaction_amount} | Status: ${p.status}`);
-        }
         
         return statusApproved && amountMatch;
       });
