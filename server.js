@@ -561,9 +561,9 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
   }
 });
 
-// --- INTEGRAÇÃO MERCADO PAGO POINT (Smart - Versão Final) ---
+// --- INTEGRAÇÃO MERCADO PAGO POINT (Orders API Unificada) ---
 
-// CRIAR PAGAMENTO PIX (QR Code - Orders API)
+// CRIAR PAGAMENTO PIX (QR Code na tela)
 app.post("/api/payment/create-pix", async (req, res) => {
   const { amount, description, orderId } = req.body;
 
@@ -573,10 +573,10 @@ app.post("/api/payment/create-pix", async (req, res) => {
   }
 
   try {
-    console.log(`💚 Criando pagamento PIX de R$ ${amount}...`);
+    console.log(`💚 Criando pagamento PIX (QR Code) de R$ ${amount}...`);
 
     const orderPayload = {
-      type: "online",
+      type: "online", // QR Code exibido na tela
       transaction_amount: parseFloat(amount),
       description: description || `Pedido ${orderId}`,
       external_reference: orderId,
@@ -626,18 +626,9 @@ app.post("/api/payment/create-pix", async (req, res) => {
   }
 });
 
-// CRIAR PAGAMENTO CARTÃO (Maquininha - Point Integration API)
+// CRIAR PAGAMENTO NA MAQUININHA (Orders API com type: "point")
 app.post("/api/payment/create", async (req, res) => {
   const { amount, description, orderId, paymentMethod } = req.body;
-
-  // Se for PIX, redirecionar para endpoint correto
-  if (paymentMethod === 'pix') {
-    console.log(`🔀 PIX detectado - redirecionando para /api/payment/create-pix`);
-    return res.status(400).json({ 
-      error: "Use /api/payment/create-pix para pagamentos PIX",
-      redirect: "/api/payment/create-pix"
-    });
-  }
 
   if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
     console.error("Faltam credenciais do Mercado Pago");
@@ -645,401 +636,119 @@ app.post("/api/payment/create", async (req, res) => {
   }
 
   try {
-    console.log(
-      `💳 Iniciando pagamento de R$ ${amount} na maquininha ${MP_DEVICE_ID}...`
-    );
-    console.log(`💰 Método escolhido: ${paymentMethod || 'qualquer'}`);
+    console.log(`💳 Criando order na maquininha ${MP_DEVICE_ID}...`);
+    console.log(`💰 Método solicitado: ${paymentMethod || 'todos'}`);
 
-    // 1. Limpeza de fila preventiva
-    try {
-      const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
-      const listResp = await fetch(listUrl, {
-        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-      });
-      if (listResp.ok) {
-        const listData = await listResp.json();
-        const events = listData.events || (listData.id ? [listData] : []);
-        if (events.length > 0) {
-          console.log(
-            `🧹 Limpando ${events.length} pedido(s) travado(s) antes de iniciar...`
-          );
-          for (const ev of events) {
-            const iId = ev.payment_intent_id || ev.id;
-            await fetch(`${listUrl}/${iId}`, {
-              method: "DELETE",
-              headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-            });
-          }
-        }
-      }
-    } catch (e) {
-      /* Silencioso */
-    }
+    // Mapeamento de método de pagamento
+    const paymentTypeMap = {
+      'pix': 'pix',
+      'debit': 'debit_card',
+      'credit': 'credit_card'
+    };
 
-    // 2. Preparar payload SIMPLES para maquininha (sem filtro de método)
-    // A Point Smart 2 vai mostrar todas as opções disponíveis
-    const payload = {
-      amount: Math.round(amount * 100), // Valor em Centavos
+    // Configurar filtro de forma de pagamento
+    const orderPayload = {
+      type: "point", // ← CHAVE: Envia para maquininha física!
+      transaction_amount: parseFloat(amount),
       description: description || `Pedido ${orderId}`,
-      additional_info: {
-        external_reference: orderId,
-        print_on_terminal: true,
+      external_reference: orderId,
+      notification_url: `${process.env.FRONTEND_URL || 'https://backendkioskpro.onrender.com'}/api/notifications/mercadopago`,
+      transactions: {
+        payments: [
+          {
+            amount: parseFloat(amount).toFixed(2),
+            payment_method: {
+              id: paymentTypeMap[paymentMethod] || null, // null = mostra todos
+              type: paymentTypeMap[paymentMethod] || null,
+            }
+          }
+        ]
       }
     };
 
-    console.log(`💳 Payload para Point: R$ ${(payload.amount / 100).toFixed(2)}`);
+    console.log(`📤 Payload Order (Point):`, JSON.stringify(orderPayload, null, 2));
 
-    // 3. Cria nova intenção
-    const url = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
-    const response = await fetch(url, {
-      method: "POST",
+    const response = await fetch('https://api.mercadopago.com/v1/orders', {
+      method: 'POST',
       headers: {
-        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
+        'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+        'X-Device-Id': MP_DEVICE_ID // Identifica a maquininha
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(orderPayload),
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("Erro MP Create:", data);
-      throw new Error(data.message || "Erro ao criar pagamento no MP");
+      console.error("❌ Erro ao criar order na Point:", data);
+      throw new Error(data.message || "Erro ao criar pagamento");
     }
 
-    res.json({ id: data.id, status: "open" });
+    console.log(`✅ Order criada na Point! ID: ${data.id}`);
+    console.log(`📱 Status: ${data.status}`);
+
+    res.json({ 
+      id: data.id, 
+      status: "pending",
+      type: 'point'
+    });
+
   } catch (error) {
-    console.error("Erro Pagamento:", error);
+    console.error("❌ Erro Pagamento Point:", error);
     res.status(500).json({ error: "Falha ao comunicar com maquininha" });
   }
 });
 
-// Verificar status PIX (Order API)
-app.get("/api/payment/status-pix/:orderId", async (req, res) => {
+// Verificar status ORDER (unificado para PIX e Point)
+app.get("/api/payment/status/:orderId", async (req, res) => {
   const { orderId } = req.params;
 
-  if (orderId.startsWith("mock_pix")) return res.json({ status: "approved" });
+  if (orderId.startsWith("mock_")) return res.json({ status: "approved" });
   if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token MP" });
 
   try {
-    console.log(`🔍 Verificando status da order PIX: ${orderId}`);
+    console.log(`🔍 Verificando status da order: ${orderId}`);
 
+    // 1. Busca a order
     const url = `https://api.mercadopago.com/v1/orders/${orderId}`;
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
 
+    if (!response.ok) {
+      console.error(`❌ Erro ao buscar order ${orderId}: ${response.status}`);
+      return res.json({ status: "pending" });
+    }
+
     const order = await response.json();
 
-    console.log(`💚 Order PIX ${orderId} | Status: ${order.status}`);
+    console.log(`📋 Order ${orderId} | Type: ${order.type} | Status: ${order.status}`);
 
-    // Status possíveis: opened, closed, expired, cancelled
+    // 2. Status possíveis: opened, closed, expired, cancelled
     if (order.status === 'closed') {
+      // Order fechada = pagamento aprovado
+      console.log(`✅ Order ${orderId} FECHADA - Pagamento aprovado!`);
       return res.json({ status: "approved", orderId: order.id });
     } else if (order.status === 'expired' || order.status === 'cancelled') {
+      console.log(`❌ Order ${orderId} ${order.status.toUpperCase()}`);
       return res.json({ status: "canceled" });
     }
 
+    // 3. Ainda aberta/pendente
+    console.log(`⏳ Order ${orderId} ainda pendente`);
     res.json({ status: "pending" });
+
   } catch (error) {
-    console.error("❌ Erro ao verificar PIX:", error.message);
+    console.error("❌ Erro ao verificar status order:", error.message);
     res.json({ status: "pending" });
   }
 });
 
-// Verificar status cartão (Point Integration API)
-app.get("/api/payment/status/:paymentId", async (req, res) => {
-  const { paymentId } = req.params;
-
-  if (paymentId.startsWith("mock_pay")) return res.json({ status: "approved" });
-  if (paymentId.startsWith("mock_pix")) return res.json({ status: "approved" });
-  if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token MP" });
-
-  try {
-    // 0. PRIMEIRO: Verifica a Intent para pegar o valor
-    const urlIntent = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
-    const respIntent = await fetch(urlIntent, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-    });
-    const dataIntent = await respIntent.json();
-    const intentAmount = dataIntent.amount;
-
-    console.log(`🔎 Intent ID: ${paymentId} | State: ${dataIntent.state} | Valor: R$ ${(intentAmount / 100).toFixed(2)}`);
-
-    // 1. VERIFICA O CACHE PRIMEIRO (webhook pode ter salvado)
-    if (intentAmount > 0) {
-      const cacheKey = `amount_${intentAmount}`;
-      const cached = confirmedPayments.get(cacheKey);
-      
-      if (cached) {
-        console.log(`⚡ PAGAMENTO ENCONTRADO NO CACHE! ID: ${cached.paymentId} (webhook)`);
-        
-        // Remove do cache
-        confirmedPayments.delete(cacheKey);
-        
-        // Limpa a intent
-        try {
-          await fetch(urlIntent, {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-          });
-          console.log(`🧹 Intent ${paymentId} deletada após cache hit`);
-        } catch (e) {}
-        
-        return res.json({ status: "approved", paymentId: cached.paymentId });
-      }
-    }
-
-    console.log(`💭 Cache miss - consultando API do MP...`);
-
-    // 2. Verifica se há payment.id diretamente na intent (PRIORIDADE)
-    if (dataIntent.payment && dataIntent.payment.id) {
-      console.log(`✅ Payment ID encontrado na intent: ${dataIntent.payment.id}`);
-      
-      // FORÇA CANCELAMENTO MÚLTIPLO para garantir que maquininha libere
-      console.log(`🔄 Forçando cancelamento da intent na Point Pro 2...`);
-      
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const delResp = await fetch(urlIntent, {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-          });
-          
-          if (delResp.ok || delResp.status === 404) {
-            console.log(`✅ Tentativa ${attempt}: Intent ${paymentId} cancelada com sucesso`);
-            break;
-          } else {
-            console.log(`⚠️ Tentativa ${attempt}: Status ${delResp.status}`);
-            if (attempt < 3) await new Promise(r => setTimeout(r, 500));
-          }
-        } catch (e) {
-          console.warn(`❌ Tentativa ${attempt} falhou:`, e.message);
-          if (attempt < 3) await new Promise(r => setTimeout(r, 500));
-        }
-      }
-      
-      // Limpa todas as intents pendentes da maquininha
-      try {
-        const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
-        const listResp = await fetch(listUrl, {
-          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-        });
-        
-        if (listResp.ok) {
-          const listData = await listResp.json();
-          const events = listData.events || [];
-          
-          if (events.length > 0) {
-            console.log(`🧹 Limpando ${events.length} intent(s) adicional(is) da fila...`);
-            for (const ev of events) {
-              const iId = ev.payment_intent_id || ev.id;
-              await fetch(`${listUrl}/${iId}`, {
-                method: "DELETE",
-                headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-              });
-            }
-            console.log(`✅ Fila de pagamentos limpa - Point Pro 2 liberada`);
-          }
-        }
-      } catch (e) {
-        console.log(`⚠️ Aviso ao limpar fila:`, e.message);
-      }
-      
-      return res.json({ status: "approved", paymentId: dataIntent.payment.id });
-    }
-    
-    // 3. Verifica se a intent tem ID de payment nos detalhes adicionais
-    if (dataIntent.additional_info?.external_reference) {
-      console.log(`🔍 Buscando por external_reference: ${dataIntent.additional_info.external_reference}`);
-    }
-
-    // Verifica estados finalizados - LIMPA AGRESSIVAMENTE
-    if (dataIntent.state === "FINISHED" || dataIntent.state === "PROCESSED") {
-      console.log(`✅ Intent em estado finalizado: ${dataIntent.state}`);
-      console.log(`🚨 ATENÇÃO: Pagamento concluído mas ainda na fila! Limpando TUDO...`);
-      
-      // Cancelamento múltiplo forçado
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        try {
-          const delResp = await fetch(urlIntent, {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-          });
-          
-          if (delResp.ok || delResp.status === 404) {
-            console.log(`✅ Tentativa ${attempt}: Intent ${paymentId} removida`);
-            break;
-          }
-          
-          if (attempt < 5) {
-            console.log(`⚠️ Tentativa ${attempt} falhou, tentando novamente...`);
-            await new Promise(r => setTimeout(r, 300));
-          }
-        } catch (e) {
-          if (attempt < 5) await new Promise(r => setTimeout(r, 300));
-        }
-      }
-      
-      // LIMPA TODA A FILA para evitar botão verde voltar ao pagamento
-      try {
-        const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
-        const listResp = await fetch(listUrl, {
-          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-        });
-        
-        if (listResp.ok) {
-          const listData = await listResp.json();
-          const events = listData.events || [];
-          
-          console.log(`🔍 Verificando fila completa: ${events.length} intent(s) encontrada(s)`);
-          
-          for (const ev of events) {
-            const iId = ev.payment_intent_id || ev.id;
-            try {
-              await fetch(`${listUrl}/${iId}`, {
-                method: "DELETE",
-                headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-              });
-              console.log(`  🗑️ Intent ${iId} removida da fila`);
-            } catch (e) {
-              console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
-            }
-          }
-          
-          console.log(`✅ TODAS as intents removidas - Botão verde não volta mais ao pagamento!`);
-        }
-      } catch (e) {
-        console.log(`⚠️ Erro ao limpar fila completa:`, e.message);
-      }
-      
-      return res.json({ status: "approved" });
-    }
-
-    // 2. BUSCA POR VALOR (Plano de Contingência MELHORADO)
-    if (intentAmount > 0) {
-      const expectedAmountFloat = intentAmount / 100;
-      console.log(
-        `🕵️ Buscando pagamento de R$ ${expectedAmountFloat.toFixed(2)} nos últimos 30 min...`
-      );
-
-      // Busca nos últimos 30 minutos com mais resultados
-      const urlSearch = `https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&limit=50&range=date_created:NOW-30MINUTES:NOW&status=approved`;
-      const respSearch = await fetch(urlSearch, {
-        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-      });
-      const dataSearch = await respSearch.json();
-      const payments = dataSearch.results || [];
-
-      console.log(`📋 Encontrados ${payments.length} pagamentos APROVADOS recentes`);
-      
-      // Mostra TODOS os pagamentos para debug
-      if (payments.length > 0) {
-        console.log(`\n📊 Listando todos os pagamentos encontrados:`);
-        payments.slice(0, 10).forEach((p, idx) => {
-          const amountInCents = Math.round(p.transaction_amount * 100);
-          const match = amountInCents === intentAmount ? "✅ MATCH!" : "";
-          console.log(`  ${idx + 1}. ID: ${p.id} | R$ ${p.transaction_amount} (${amountInCents} centavos) | Status: ${p.status} | Método: ${p.payment_method_id || 'N/A'} ${match}`);
-        });
-        console.log(`\n`);
-      }
-
-      // Procura pagamento aprovado com MESMO VALOR
-      const found = payments.find((p) => {
-        const amountMatch = Math.round(p.transaction_amount * 100) === intentAmount;
-        const statusApproved = p.status === "approved" || p.status === "authorized";
-        
-        return statusApproved && amountMatch;
-      });
-
-      if (found) {
-        console.log(`✅ PAGAMENTO APROVADO ENCONTRADO! ID: ${found.id} | Valor: R$ ${found.transaction_amount}`);
-
-        // LIMPEZA AGRESSIVA - Point Pro 2 precisa de múltiplas tentativas
-        console.log(`🔄 Forçando cancelamento múltiplo na Point Pro 2...`);
-        
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          try {
-            const delResp = await fetch(urlIntent, {
-              method: "DELETE",
-              headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-            });
-            
-            if (delResp.ok || delResp.status === 404) {
-              console.log(`✅ Tentativa ${attempt}: Intent ${paymentId} cancelada`);
-              break;
-            } else {
-              console.log(`⚠️ Tentativa ${attempt}: Status ${delResp.status}`);
-              if (attempt < 3) await new Promise(r => setTimeout(r, 500));
-            }
-          } catch (e) {
-            console.warn(`❌ Tentativa ${attempt}:`, e.message);
-            if (attempt < 3) await new Promise(r => setTimeout(r, 500));
-          }
-        }
-        
-        // Limpa TODA a fila de intents pendentes
-        try {
-          const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
-          const listResp = await fetch(listUrl, {
-            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-          });
-          
-          if (listResp.ok) {
-            const listData = await listResp.json();
-            const events = listData.events || [];
-            
-            if (events.length > 0) {
-              console.log(`🧹 Limpando ${events.length} intent(s) da fila Point Pro 2...`);
-              for (const ev of events) {
-                const iId = ev.payment_intent_id || ev.id;
-                try {
-                  await fetch(`${listUrl}/${iId}`, {
-                    method: "DELETE",
-                    headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-                  });
-                } catch (e) {
-                  /* Continua limpando outras */
-                }
-              }
-              console.log(`✅ Point Pro 2 completamente liberada!`);
-            }
-          }
-        } catch (e) {
-          console.log(`⚠️ Aviso ao limpar fila:`, e.message);
-        }
-        
-        console.log(`✅ Maquininha liberada - NÃO cobrará novamente`);
-        return res.json({ status: "approved", paymentId: found.id });
-      } else {
-        console.log(`⏳ Nenhum pagamento aprovado com valor R$ ${expectedAmountFloat.toFixed(2)} encontrado ainda`);
-      }
-    }
-
-    // Se a intent foi cancelada/erro, limpa e informa ao frontend
-    if (dataIntent.state === "CANCELED" || dataIntent.state === "ERROR") {
-      console.log(`❌ Intent em estado: ${dataIntent.state}`);
-      
-      // Tenta limpar mesmo assim para evitar travamentos
-      try {
-        await fetch(urlIntent, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-        });
-        console.log(`🧹 Intent cancelada/erro removida da fila`);
-      } catch (e) {
-        /* Silencioso */
-      }
-      
-      return res.json({ status: "canceled" });
-    }
-
-    // Ainda pendente
-    res.json({ status: "pending" });
-  } catch (error) {
-    console.error("❌ Erro ao verificar status:", error.message);
-    res.json({ status: "pending" });
-  }
+// ENDPOINT LEGADO (para compatibilidade temporária com antigo sistema)
+app.get("/api/payment/status-pix/:orderId", async (req, res) => {
+  console.log(`⚠️ Endpoint legado /status-pix chamado - redirecionando para /status`);
+  return res.redirect(307, `/api/payment/status/${req.params.orderId}`);
 });
 
 // Cancelar pagamento manualmente (caso necessário)
