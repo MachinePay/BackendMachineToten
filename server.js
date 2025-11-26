@@ -303,6 +303,65 @@ app.get("/api/user-orders", async (req, res) => {
   }
 });
 
+// --- IPN MERCADO PAGO (Para pagamentos físicos Point) ---
+
+app.post("/api/notifications/mercadopago", async (req, res) => {
+  const timestamp = new Date().toISOString();
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`🔔 [${timestamp}] IPN RECEBIDO DO MERCADO PAGO (Point)`);
+  console.log(`${"=".repeat(60)}`);
+  console.log("Headers:", JSON.stringify(req.headers, null, 2));
+  console.log("Query Params:", JSON.stringify(req.query, null, 2));
+  console.log("Body:", JSON.stringify(req.body, null, 2));
+  console.log(`${"=".repeat(60)}\n`);
+  
+  try {
+    // IPN envia dados via query params
+    const { id, topic } = req.query;
+
+    // Responde rápido ao MP (obrigatório - SEMPRE 200 OK)
+    res.status(200).send("OK");
+
+    // Processa notificação em background
+    if (topic === "payment" && id) {
+      console.log(`📨 Processando IPN de pagamento: ${id}`);
+
+      // Busca detalhes do pagamento
+      const urlPayment = `https://api.mercadopago.com/v1/payments/${id}`;
+      const respPayment = await fetch(urlPayment, {
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+      const payment = await respPayment.json();
+
+      console.log(`💳 Pagamento ${id} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`);
+
+      // Se aprovado, adiciona ao cache
+      if (payment.status === "approved" || payment.status === "authorized") {
+        const amountInCents = Math.round(payment.transaction_amount * 100);
+        const cacheKey = `amount_${amountInCents}`;
+        
+        confirmedPayments.set(cacheKey, {
+          paymentId: payment.id,
+          amount: payment.transaction_amount,
+          status: payment.status,
+          timestamp: Date.now(),
+        });
+
+        console.log(`✅ Pagamento ${id} confirmado via IPN e adicionado ao cache! Valor: R$ ${payment.transaction_amount}`);
+      }
+    } else {
+      console.log(`⚠️ IPN ignorado - Topic: ${topic}, ID: ${id}`);
+    }
+  } catch (error) {
+    console.error("❌ Erro processando IPN:", error.message);
+  }
+});
+
+// Endpoint teste para validar IPN
+app.get("/api/notifications/mercadopago", (req, res) => {
+  res.json({ status: "ready", message: "IPN endpoint ativo para pagamentos Point" });
+});
+
 // --- WEBHOOK MERCADO PAGO (Notificação Instantânea) ---
 
 app.post("/api/webhooks/mercadopago", async (req, res) => {

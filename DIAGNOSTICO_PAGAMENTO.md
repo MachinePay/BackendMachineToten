@@ -2,44 +2,51 @@
 
 ## 🔴 Problema Identificado
 
-**Sintoma**: Pagamento aprovado NA HORA no Mercado Pago, mas o site não reconhece.
+**Sintoma**: Pagamento aprovado NA HORA no Mercado Pago Point (maquininha física), mas o site não reconhece.
 
-**Causa REAL**: O backend estava apenas fazendo polling (consultando repetidamente). Sem webhook, ele fica "cego" esperando o frontend perguntar.
+**Causa REAL**: Pagamentos físicos da Point **NÃO APARECEM** na API de busca e webhooks padrão **NÃO DISPARAM** para transações presenciais. A busca por `date_created` retorna 0 resultados mesmo com pagamento aprovado.
 
-**Solução**: Webhook + Cache de pagamentos confirmados.
+**Solução**: **IPN (Instant Payment Notification)** - Sistema específico do Mercado Pago para pagamentos físicos/presenciais.
 
 ---
 
 ## ✅ Correções Implementadas no `server.js`
 
-### 1. **🆕 WEBHOOK DO MERCADO PAGO** (Principal!)
-- Rota: `POST /api/webhooks/mercadopago`
-- O Mercado Pago **avisa o backend INSTANTANEAMENTE** quando o pagamento é aprovado
+### 1. **🆕 IPN MERCADO PAGO** (Para pagamentos físicos Point!)
+- Rota: `POST /api/notifications/mercadopago`
+- **Diferente de webhook** - IPN usa query params (`?id=123&topic=payment`)
+- O Mercado Pago **avisa o backend INSTANTANEAMENTE** quando pagamento físico é aprovado
 - Pagamento é salvo em cache (Map na memória)
-- **Resultado**: Resposta em menos de 1 segundo!
+- **URL completa**: `https://backendkioskpro.onrender.com/api/notifications/mercadopago`
 
-### 2. **⚡ Cache de Pagamentos Confirmados**
-- Quando webhook recebe "approved", salva no cache por valor
+### 2. **🔔 WEBHOOK DO MERCADO PAGO** (Backup para pagamentos online)
+- Rota: `POST /api/webhooks/mercadopago`
+- Para pagamentos online/e-commerce (não Point)
+- Mantido como fallback
+
+### 3. **⚡ Cache de Pagamentos Confirmados**
+- Quando IPN recebe "approved", salva no cache por valor
 - Endpoint `/status` consulta cache PRIMEIRO
 - Se encontrar → resposta instantânea
 - Se não encontrar → faz busca na API (fallback)
 
-### 3. **Logs Detalhados**
+### 4. **Logs Detalhados**
 Agora você verá:
 ```
-🔔 Webhook recebido do Mercado Pago: {...}
-💳 Pagamento 789 | Status: approved | Valor: R$ 25.00
-✅ Pagamento 789 confirmado e adicionado ao cache!
+🔔 IPN RECEBIDO DO MERCADO PAGO (Point)
+Query Params: {"id":"123456789","topic":"payment"}
+💳 Pagamento 123456789 | Status: approved | Valor: R$ 25.00
+✅ Pagamento 123456789 confirmado via IPN e adicionado ao cache!
 
 🔎 Intent ID: abc123 | State: OPEN | Valor: R$ 25.00
-⚡ PAGAMENTO ENCONTRADO NO CACHE! ID: 789 (webhook)
+⚡ PAGAMENTO ENCONTRADO NO CACHE! ID: 123456789 (IPN)
 🧹 Intent abc123 deletada após cache hit
 ```
 
-### 4. **Fallback Melhorado**
-- Se webhook falhar, busca na API continua funcionando
-- Busca em 15 minutos, 20 resultados
-- Dupla segurança
+### 5. **Fallback Melhorado**
+- Se IPN falhar, busca na API continua funcionando
+- Busca em 30 minutos, 50 resultados, apenas aprovados
+- Tripla segurança
 
 ---
 
@@ -55,28 +62,33 @@ git push origin main
 
 Aguarde 2-3 minutos para o Render fazer o deploy.
 
-### 2️⃣ **CONFIGURAR WEBHOOK NO MERCADO PAGO** (CRUCIAL!)
+### 2️⃣ **CONFIGURAR IPN NO MERCADO PAGO** (CRUCIAL PARA POINT!)
+
+#### **⚠️ IMPORTANTE: IPN é diferente de Webhook**
+- **IPN**: Para pagamentos físicos (Point/maquininha)
+- **Webhook**: Para pagamentos online (e-commerce)
+- **VOCÊ PRECISA CONFIGURAR O IPN** para pagamentos presenciais funcionarem!
 
 #### **Passo 1: Pegar a URL correta do Render**
 
 1. Acesse: https://dashboard.render.com
 2. Clique no seu backend (ex: `kiosk-backend` ou `backendkioskpro`)
 3. **Copie a URL** que aparece no topo (ex: `https://backendkioskpro.onrender.com`)
-4. Adicione no final: `/api/webhooks/mercadopago`
-5. **URL final**: `https://backendkioskpro.onrender.com/api/webhooks/mercadopago`
+4. Adicione no final: `/api/notifications/mercadopago`
+5. **URL IPN final**: `https://backendkioskpro.onrender.com/api/notifications/mercadopago`
 
 #### **Passo 2: Testar a URL ANTES de configurar no MP**
 
 Abra no navegador:
 ```
-https://backendkioskpro.onrender.com/api/webhooks/mercadopago
+https://backendkioskpro.onrender.com/api/notifications/mercadopago
 ```
 
 **✅ Resposta esperada:**
 ```json
 {
-  "message": "Webhook endpoint ativo! Use POST para enviar notificações.",
-  "ready": true
+  "status": "ready",
+  "message": "IPN endpoint ativo para pagamentos Point"
 }
 ```
 
@@ -86,28 +98,33 @@ https://backendkioskpro.onrender.com/api/webhooks/mercadopago
 - Aguarde 30 segundos (cold start)
 - Tente novamente
 
-#### **Passo 3: Configurar no Mercado Pago**
+#### **Passo 3: Configurar IPN no Mercado Pago**
 
-1. **Acesse:** https://www.mercadopago.com.br/developers/panel/app
+🔗 **Link direto para configuração:**
+https://www.mercadopago.com.br/settings/account/notifications
 
-2. **Selecione seu Aplicativo** (modo produção)
+**OU navegue manualmente:**
 
-3. **Vá em "Webhooks" ou "Notificações"**
+1. **Acesse:** https://www.mercadopago.com.br/
+2. **Faça login** na sua conta
+3. **Vá em:** Seu perfil → **Configurações** (ícone engrenagem)
+4. **Clique em:** **Notificações**
+5. **Procure por:** "IPN" ou "Notificações instantâneas de pagamento"
 
-4. **Clique em "Configurar URL" ou "Adicionar"**
+**Configure:**
 
-5. **Cole a URL:**
-   ```
-   https://backendkioskpro.onrender.com/api/webhooks/mercadopago
-   ```
+- **URL de IPN:**
+  ```
+  https://backendkioskpro.onrender.com/api/notifications/mercadopago
+  ```
 
-6. **Selecione os Eventos:**
-   - ✅ `payment` (ou `Pagamentos`)
-   - ✅ Modo: **Produção**
+- **Modo:** **Produção** (não teste!)
+
+- **Eventos:** Todos relacionados a pagamentos
 
 7. **Salve a Configuração**
 
-#### **Passo 4: Testar o Webhook**
+#### **Passo 4: Testar o IPN**
 
 1. **Abra os logs do Render** em outra aba:
    - Render → Seu Backend → **Logs**
