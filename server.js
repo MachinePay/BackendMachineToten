@@ -516,7 +516,7 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
 // --- INTEGRAÇÃO MERCADO PAGO POINT (Smart - Versão Final) ---
 
 app.post("/api/payment/create", async (req, res) => {
-  const { amount, description, orderId } = req.body;
+  const { amount, description, orderId, paymentMethod } = req.body;
 
   if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
     console.error("Faltam credenciais do Mercado Pago");
@@ -527,6 +527,7 @@ app.post("/api/payment/create", async (req, res) => {
     console.log(
       `💳 Iniciando pagamento de R$ ${amount} na maquininha ${MP_DEVICE_ID}...`
     );
+    console.log(`💰 Método escolhido: ${paymentMethod || 'qualquer'}`);
 
     // 1. Limpeza de fila preventiva
     try {
@@ -554,7 +555,36 @@ app.post("/api/payment/create", async (req, res) => {
       /* Silencioso */
     }
 
-    // 2. Cria nova intenção (SEM CAMPOS EXTRAS PROIBIDOS)
+    // 2. Preparar payload com método de pagamento específico
+    const payload = {
+      amount: Math.round(amount * 100), // Valor em Centavos
+      description: description || `Pedido ${orderId}`,
+      additional_info: {
+        external_reference: orderId,
+        print_on_terminal: true,
+      }
+    };
+
+    // Adicionar método de pagamento se especificado
+    // Valores válidos: credit_card, debit_card, pix
+    if (paymentMethod) {
+      payload.payment = {
+        type: paymentMethod === 'pix' ? 'pix' : 'credit_card', // MP Point aceita: credit_card, debit_card, pix
+        installments: paymentMethod === 'credit' ? 1 : undefined,
+        installments_cost: paymentMethod === 'credit' ? 'buyer' : undefined
+      };
+      
+      // Ajustar tipo específico
+      if (paymentMethod === 'debit') {
+        payload.payment.type = 'debit_card';
+      } else if (paymentMethod === 'credit') {
+        payload.payment.type = 'credit_card';
+      }
+      
+      console.log(`🎯 Configurando pagamento para: ${payload.payment.type}`);
+    }
+
+    // 3. Cria nova intenção
     const url = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
     const response = await fetch(url, {
       method: "POST",
@@ -562,14 +592,7 @@ app.post("/api/payment/create", async (req, res) => {
         Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        amount: Math.round(amount * 100), // Valor em Centavos
-        description: description || `Pedido ${orderId}`,
-        additional_info: {
-          external_reference: orderId,
-          print_on_terminal: true,
-        },
-      }),
+      body: JSON.stringify(payload),
     });
 
     const data = await response.json();
@@ -707,15 +730,16 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       if (found) {
         console.log(`✅ PAGAMENTO APROVADO ENCONTRADO! ID: ${found.id} | Valor: R$ ${found.transaction_amount}`);
 
-        // Limpa a intent da maquininha para liberar
+        // Limpa a intent da maquininha para liberar IMEDIATAMENTE
         try {
           await fetch(urlIntent, {
             method: "DELETE",
             headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
           });
-          console.log(`🧹 Intent ${paymentId} deletada após encontrar pagamento ${found.id}`);
+          console.log(`🧹 Intent ${paymentId} deletada AUTOMATICAMENTE após confirmação ${found.id}`);
+          console.log(`✅ Maquininha liberada - NÃO cobrará novamente`);
         } catch (e) {
-          console.warn("Aviso ao deletar intent:", e.message);
+          console.warn("⚠️ Aviso ao deletar intent:", e.message);
         }
 
         return res.json({ status: "approved", paymentId: found.id });
@@ -724,9 +748,21 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       }
     }
 
-    // Se a intent foi cancelada/erro, informa ao frontend
+    // Se a intent foi cancelada/erro, limpa e informa ao frontend
     if (dataIntent.state === "CANCELED" || dataIntent.state === "ERROR") {
       console.log(`❌ Intent em estado: ${dataIntent.state}`);
+      
+      // Tenta limpar mesmo assim para evitar travamentos
+      try {
+        await fetch(urlIntent, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        });
+        console.log(`🧹 Intent cancelada/erro removida da fila`);
+      } catch (e) {
+        /* Silencioso */
+      }
+      
       return res.json({ status: "canceled" });
     }
 
@@ -735,6 +771,37 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
   } catch (error) {
     console.error("❌ Erro ao verificar status:", error.message);
     res.json({ status: "pending" });
+  }
+});
+
+// Cancelar pagamento manualmente (caso necessário)
+app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
+  const { paymentId } = req.params;
+
+  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+    return res.json({ success: true, message: "Mock cancelado" });
+  }
+
+  try {
+    console.log(`🛑 Cancelando intent: ${paymentId}`);
+    
+    const urlIntent = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
+    const response = await fetch(urlIntent, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+    });
+
+    if (response.ok || response.status === 404) {
+      console.log(`✅ Intent ${paymentId} cancelada com sucesso`);
+      return res.json({ success: true, message: "Pagamento cancelado" });
+    } else {
+      const error = await response.json();
+      console.error(`❌ Erro ao cancelar: ${error.message}`);
+      return res.status(400).json({ success: false, error: error.message });
+    }
+  } catch (error) {
+    console.error("❌ Erro ao cancelar pagamento:", error.message);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
