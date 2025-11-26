@@ -603,7 +603,7 @@ app.post("/api/payment/create", async (req, res) => {
       /* Silencioso */
     }
 
-    // 2. Preparar payload com método de pagamento específico
+    // 2. Preparar payload com método de pagamento específico para Point Smart 2
     const payload = {
       amount: Math.round(amount * 100), // Valor em Centavos
       description: description || `Pedido ${orderId}`,
@@ -613,23 +613,38 @@ app.post("/api/payment/create", async (req, res) => {
       }
     };
 
-    // Adicionar método de pagamento se especificado
-    // Valores válidos: credit_card, debit_card, pix
+    // FORÇAR método de pagamento específico (Point Smart 2)
+    // Isso impede que a maquininha mostre outras opções
     if (paymentMethod) {
-      payload.payment = {
-        type: paymentMethod === 'pix' ? 'pix' : 'credit_card', // MP Point aceita: credit_card, debit_card, pix
-        installments: paymentMethod === 'credit' ? 1 : undefined,
-        installments_cost: paymentMethod === 'credit' ? 'buyer' : undefined
-      };
+      console.log(`🎯 Point Smart 2 - FORÇANDO método: ${paymentMethod}`);
       
-      // Ajustar tipo específico
-      if (paymentMethod === 'debit') {
-        payload.payment.type = 'debit_card';
+      // Configuração específica por método
+      if (paymentMethod === 'pix') {
+        payload.payment = {
+          type: 'pix',
+          // Point Smart 2: força apenas PIX
+        };
+      } else if (paymentMethod === 'debit') {
+        payload.payment = {
+          type: 'debit_card',
+          installments: 1,
+          // Point Smart 2: força apenas débito
+        };
       } else if (paymentMethod === 'credit') {
-        payload.payment.type = 'credit_card';
+        payload.payment = {
+          type: 'credit_card',
+          installments: 1,
+          installments_cost: 'buyer',
+          // Point Smart 2: força apenas crédito
+        };
       }
       
-      console.log(`🎯 Configurando pagamento para: ${payload.payment.type}`);
+      // IMPORTANTE: Point Smart requer operating_mode para forçar método único
+      payload.payment.operating_mode = 'PDV'; // Modo PDV força integração
+      
+      console.log(`✅ Point Smart 2 configurada - Apenas ${payload.payment.type} será aceito`);
+    } else {
+      console.log(`⚠️ ATENÇÃO: Nenhum método especificado - Point vai mostrar TODAS as opções!`);
     }
 
     // 3. Cria nova intenção
@@ -978,6 +993,86 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
   } catch (error) {
     console.error("❌ Erro ao cancelar pagamento:", error.message);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Configurar Point Smart 2 (modo operacional e vinculação)
+app.post("/api/point/configure", async (req, res) => {
+  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+    return res.json({ success: false, error: "Credenciais não configuradas" });
+  }
+
+  try {
+    console.log(`⚙️ Configurando Point Smart 2: ${MP_DEVICE_ID}`);
+    
+    // Configuração do dispositivo Point Smart
+    const configUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}`;
+    
+    const configPayload = {
+      operating_mode: 'PDV', // Modo PDV - integração com frente de caixa
+      // Isso mantém a Point vinculada e bloqueia acesso ao menu
+    };
+    
+    const response = await fetch(configUrl, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(configPayload),
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      console.log(`✅ Point Smart 2 configurada em modo PDV`);
+      console.log(`🔒 Menu bloqueado - apenas pagamentos via API`);
+      
+      return res.json({ 
+        success: true, 
+        message: "Point configurada com sucesso",
+        mode: 'PDV',
+        device: data
+      });
+    } else {
+      const error = await response.json();
+      console.error(`❌ Erro ao configurar Point:`, error);
+      return res.status(400).json({ success: false, error: error.message });
+    }
+    
+  } catch (error) {
+    console.error("❌ Erro ao configurar Point Smart 2:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Verificar status da Point Smart 2
+app.get("/api/point/status", async (req, res) => {
+  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+    return res.json({ connected: false, error: "Credenciais não configuradas" });
+  }
+
+  try {
+    const deviceUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}`;
+    const response = await fetch(deviceUrl, {
+      headers: { 'Authorization': `Bearer ${MP_ACCESS_TOKEN}` },
+    });
+    
+    if (response.ok) {
+      const device = await response.json();
+      
+      return res.json({
+        connected: true,
+        id: device.id,
+        operating_mode: device.operating_mode,
+        status: device.status,
+        model: device.model || 'Point Smart 2',
+      });
+    } else {
+      return res.json({ connected: false, error: "Point não encontrada" });
+    }
+    
+  } catch (error) {
+    res.status(500).json({ connected: false, error: error.message });
   }
 });
 
