@@ -168,9 +168,11 @@ app.get("/health", (req, res) =>
 
 // Rota de teste do webhook (para verificar se está acessível)
 app.get("/api/webhooks/mercadopago", (req, res) => {
+  console.log("📋 GET recebido no webhook - Teste manual ou verificação do MP");
   res.status(200).json({ 
     message: "Webhook endpoint ativo! Use POST para enviar notificações.",
-    ready: true 
+    ready: true,
+    method: "GET - Para receber notificações reais, o MP deve usar POST"
   });
 });
 
