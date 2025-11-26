@@ -646,18 +646,18 @@ app.post("/api/payment/create", async (req, res) => {
 
       const orderPayload = {
         type: "online",
-        transaction_amount: parseFloat(amount),
-        description: description || `Pedido ${orderId}`,
         external_reference: orderId,
         notification_url: `${process.env.FRONTEND_URL || 'https://backendkioskpro.onrender.com'}/api/notifications/mercadopago`,
-        payment_methods: {
-          excluded_payment_types: [
-            { id: "credit_card" },
-            { id: "debit_card" },
-            { id: "ticket" },
-            { id: "bank_transfer" }
-          ],
-          installments: 1
+        transactions: {
+          payments: [
+            {
+              amount: parseFloat(amount).toFixed(2),
+              description: description || `Pedido ${orderId}`,
+              payment_method: {
+                id: "pix"
+              }
+            }
+          ]
         }
       };
 
