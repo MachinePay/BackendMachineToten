@@ -78,7 +78,17 @@ async function initDatabase() {
       table.string("category").notNullable();
       table.string("videoUrl");
       table.boolean("popular").defaultTo(false);
+      table.integer("stock"); // NULL = estoque ilimitado, 0 = esgotado
     });
+  } else {
+    // Migração: Adicionar coluna stock se não existir
+    const hasStock = await db.schema.hasColumn("products", "stock");
+    if (!hasStock) {
+      await db.schema.table("products", (table) => {
+        table.integer("stock");
+      });
+      console.log("✅ Coluna stock adicionada à tabela products");
+    }
   }
 
   const hasUsers = await db.schema.hasTable("users");
@@ -181,9 +191,93 @@ app.get("/api/webhooks/mercadopago", (req, res) => {
 app.get("/api/menu", async (req, res) => {
   try {
     const products = await db("products").select("*").orderBy("id");
-    res.json(products.map((p) => ({ ...p, price: parseFloat(p.price) })));
+    res.json(products.map((p) => ({ 
+      ...p, 
+      price: parseFloat(p.price),
+      stock: p.stock,
+      isAvailable: p.stock === null || p.stock > 0 // null = ilimitado, > 0 = disponível
+    })));
   } catch (e) {
     res.status(500).json({ error: "Erro ao buscar menu" });
+  }
+});
+
+// CRUD de Produtos (Admin)
+
+app.post("/api/products", async (req, res) => {
+  const { id, name, description, price, category, videoUrl, popular, stock } = req.body;
+  
+  if (!name || !price || !category) {
+    return res.status(400).json({ error: "Nome, preço e categoria são obrigatórios" });
+  }
+
+  try {
+    const newProduct = {
+      id: id || `prod_${Date.now()}`,
+      name,
+      description: description || "",
+      price: parseFloat(price),
+      category,
+      videoUrl: videoUrl || "",
+      popular: popular || false,
+      stock: stock !== undefined ? parseInt(stock) : null // null = ilimitado
+    };
+    
+    await db("products").insert(newProduct);
+    res.status(201).json({ ...newProduct, isAvailable: newProduct.stock === null || newProduct.stock > 0 });
+  } catch (e) {
+    console.error("Erro ao criar produto:", e);
+    res.status(500).json({ error: "Erro ao criar produto" });
+  }
+});
+
+app.put("/api/products/:id", async (req, res) => {
+  const { id } = req.params;
+  const { name, description, price, category, videoUrl, popular, stock } = req.body;
+
+  try {
+    const exists = await db("products").where({ id }).first();
+    if (!exists) {
+      return res.status(404).json({ error: "Produto não encontrado" });
+    }
+
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (description !== undefined) updates.description = description;
+    if (price !== undefined) updates.price = parseFloat(price);
+    if (category !== undefined) updates.category = category;
+    if (videoUrl !== undefined) updates.videoUrl = videoUrl;
+    if (popular !== undefined) updates.popular = popular;
+    if (stock !== undefined) updates.stock = stock === null ? null : parseInt(stock);
+
+    await db("products").where({ id }).update(updates);
+    
+    const updated = await db("products").where({ id }).first();
+    res.json({ 
+      ...updated, 
+      price: parseFloat(updated.price),
+      isAvailable: updated.stock === null || updated.stock > 0
+    });
+  } catch (e) {
+    console.error("Erro ao atualizar produto:", e);
+    res.status(500).json({ error: "Erro ao atualizar produto" });
+  }
+});
+
+app.delete("/api/products/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const exists = await db("products").where({ id }).first();
+    if (!exists) {
+      return res.status(404).json({ error: "Produto não encontrado" });
+    }
+
+    await db("products").where({ id }).del();
+    res.json({ success: true, message: "Produto deletado com sucesso" });
+  } catch (e) {
+    console.error("Erro ao deletar produto:", e);
+    res.status(500).json({ error: "Erro ao deletar produto" });
   }
 });
 
