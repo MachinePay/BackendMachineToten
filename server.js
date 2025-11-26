@@ -652,14 +652,18 @@ app.post("/api/payment/create", async (req, res) => {
           payments: [
             {
               amount: parseFloat(amount).toFixed(2),
-              description: description || `Pedido ${orderId}`,
-              payment_method: {
-                id: "pix"
-              }
+              description: description || `Pedido ${orderId}`
             }
           ]
+        },
+        config: {
+          payment_method: {
+            default_id: "pix"
+          }
         }
       };
+      
+      console.log(`📤 Payload PIX:`, JSON.stringify(orderPayload, null, 2));
 
       const response = await fetch('https://api.mercadopago.com/v1/orders', {
         method: 'POST',
