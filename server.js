@@ -619,29 +619,32 @@ app.post("/api/payment/create", async (req, res) => {
       console.log(`🎯 Point Smart 2 - FORÇANDO método: ${paymentMethod}`);
       
       // Configuração por método - API Point só aceita: credit_card, debit_card, voucher_card
-      // PIX não é suportado como filtro, então não enviamos o campo payment para PIX
+      // PIX não é suportado como filtro
       
       if (paymentMethod === 'debit') {
         payload.payment = {
           type: 'debit_card',
           installments: 1
         };
-        console.log(`✅ Point Smart 2 - Forçando apenas Débito`);
+        console.log(`✅ DÉBITO - Mostrará APENAS débito na Point`);
       } else if (paymentMethod === 'credit') {
         payload.payment = {
           type: 'credit_card',
           installments: 1,
           installments_cost: 'buyer'
         };
-        console.log(`✅ Point Smart 2 - Forçando apenas Crédito`);
+        console.log(`✅ CRÉDITO - Mostrará APENAS crédito na Point`);
       } else if (paymentMethod === 'pix') {
-        // PIX: não enviamos campo "payment" - a Point vai mostrar todas as opções
-        // mas o PIX estará disponível. Infelizmente a API não suporta forçar apenas PIX
-        console.log(`⚠️ PIX selecionado - Point mostrará todas opções (API não suporta forçar apenas PIX)`);
+        // PIX: NÃO enviamos campo "payment" para que a Point mostre TODAS as opções
+        // incluindo PIX, Débito, Crédito
+        console.log(`✅ PIX escolhido - Point mostrará TODAS opções (incluindo PIX)`);
+        console.log(`📌 INSTRUIR USUÁRIO: Selecionar PIX na maquininha`);
       }
       
       if (payload.payment) {
-        console.log(`🎯 Método configurado: ${payload.payment.type}`);
+        console.log(`🔒 Filtro ativo: ${payload.payment.type}`);
+      } else {
+        console.log(`🔓 Sem filtro - todas as opções disponíveis`);
       }
     } else {
       console.log(`⚠️ ATENÇÃO: Nenhum método especificado - Point vai mostrar TODAS as opções!`);
