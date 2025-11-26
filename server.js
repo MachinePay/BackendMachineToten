@@ -49,7 +49,20 @@ const parseJSON = (data) => {
 const dbType = process.env.DATABASE_URL
   ? "PostgreSQL (Render)"
   : "SQLite (Local)";
-console.log(`🗄️ Banco de dados conectado: ${dbType}`);
+console.log(`🗄️ Usando banco: ${dbType}`);
+
+// Cache de pagamentos confirmados (para resolver problema de sincronia MP)
+const confirmedPayments = new Map();
+
+// Função para limpar cache antigo (a cada 1 hora)
+setInterval(() => {
+  const oneHourAgo = Date.now() - 3600000;
+  for (const [key, value] of confirmedPayments.entries()) {
+    if (value.timestamp < oneHourAgo) {
+      confirmedPayments.delete(key);
+    }
+  }
+}, 3600000);
 
 // --- Inicialização do Banco (SEED) ---
 async function initDatabase() {
@@ -280,6 +293,57 @@ app.get("/api/user-orders", async (req, res) => {
   }
 });
 
+// --- WEBHOOK MERCADO PAGO (Notificação Instantânea) ---
+
+app.post("/api/webhooks/mercadopago", async (req, res) => {
+  console.log("🔔 Webhook recebido do Mercado Pago:", JSON.stringify(req.body, null, 2));
+  
+  try {
+    const { action, data, type } = req.body;
+
+    // Responde rápido ao MP (obrigatório)
+    res.status(200).send("OK");
+
+    // Processa notificação em background
+    if (action === "payment.created" || action === "payment.updated") {
+      const paymentId = data?.id;
+      
+      if (!paymentId) {
+        console.log("⚠️ Webhook sem payment ID");
+        return;
+      }
+
+      console.log(`📨 Processando notificação de pagamento: ${paymentId}`);
+
+      // Busca detalhes do pagamento
+      const urlPayment = `https://api.mercadopago.com/v1/payments/${paymentId}`;
+      const respPayment = await fetch(urlPayment, {
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+      const payment = await respPayment.json();
+
+      console.log(`💳 Pagamento ${paymentId} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`);
+
+      // Se aprovado, adiciona ao cache
+      if (payment.status === "approved" || payment.status === "authorized") {
+        const amountInCents = Math.round(payment.transaction_amount * 100);
+        const cacheKey = `amount_${amountInCents}`;
+        
+        confirmedPayments.set(cacheKey, {
+          paymentId: payment.id,
+          amount: payment.transaction_amount,
+          status: payment.status,
+          timestamp: Date.now(),
+        });
+
+        console.log(`✅ Pagamento ${paymentId} confirmado e adicionado ao cache! Valor: R$ ${payment.transaction_amount}`);
+      }
+    }
+  } catch (error) {
+    console.error("❌ Erro processando webhook:", error.message);
+  }
+});
+
 // --- INTEGRAÇÃO MERCADO PAGO POINT (Smart - Versão Final) ---
 
 app.post("/api/payment/create", async (req, res) => {
@@ -360,64 +424,135 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
   if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token MP" });
 
   try {
-    // 1. Verifica a Intent (Maquininha)
+    // 0. PRIMEIRO: Verifica a Intent para pegar o valor
     const urlIntent = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
     const respIntent = await fetch(urlIntent, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
     const dataIntent = await respIntent.json();
-
-    console.log(`🔎 Intent Status: ${dataIntent.state}`);
-
-    if (dataIntent.state === "FINISHED" || dataIntent.state === "PROCESSED") {
-      return res.json({ status: "approved" });
-    }
-    if (dataIntent.payment && dataIntent.payment.id) {
-      return res.json({ status: "approved" });
-    }
-
-    // 2. BUSCA POR VALOR (Plano de Contingência)
-    // Recupera o valor que a maquininha estava cobrando
     const intentAmount = dataIntent.amount;
 
+    console.log(`🔎 Intent ID: ${paymentId} | State: ${dataIntent.state} | Valor: R$ ${(intentAmount / 100).toFixed(2)}`);
+
+    // 1. VERIFICA O CACHE PRIMEIRO (webhook pode ter salvado)
     if (intentAmount > 0) {
-      const expectedAmountFloat = intentAmount / 100; // Converte centavos para reais (ex: 500 -> 5.00)
+      const cacheKey = `amount_${intentAmount}`;
+      const cached = confirmedPayments.get(cacheKey);
+      
+      if (cached) {
+        console.log(`⚡ PAGAMENTO ENCONTRADO NO CACHE! ID: ${cached.paymentId} (webhook)`);
+        
+        // Remove do cache
+        confirmedPayments.delete(cacheKey);
+        
+        // Limpa a intent
+        try {
+          await fetch(urlIntent, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          });
+          console.log(`🧹 Intent ${paymentId} deletada após cache hit`);
+        } catch (e) {}
+        
+        return res.json({ status: "approved", paymentId: cached.paymentId });
+      }
+    }
+
+    console.log(`💭 Cache miss - consultando API do MP...`);
+
+    // Verifica se há payment.id diretamente na intent
+    if (dataIntent.payment && dataIntent.payment.id) {
+      console.log(`✅ Payment ID encontrado na intent: ${dataIntent.payment.id}`);
+      
+      // Limpa a intent já que o pagamento foi processado
+      try {
+        await fetch(urlIntent, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        });
+        console.log(`🧹 Intent ${paymentId} deletada após confirmação`);
+      } catch (e) {
+        console.warn("Aviso: Não foi possível deletar intent", e.message);
+      }
+      
+      return res.json({ status: "approved", paymentId: dataIntent.payment.id });
+    }
+
+    // Verifica estados finalizados
+    if (dataIntent.state === "FINISHED" || dataIntent.state === "PROCESSED") {
+      console.log(`✅ Intent em estado finalizado: ${dataIntent.state}`);
+      
+      // Limpa a intent
+      try {
+        await fetch(urlIntent, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        });
+        console.log(`🧹 Intent ${paymentId} deletada após estado ${dataIntent.state}`);
+      } catch (e) {}
+      
+      return res.json({ status: "approved" });
+    }
+
+    // 2. BUSCA POR VALOR (Plano de Contingência MELHORADO)
+    if (intentAmount > 0) {
+      const expectedAmountFloat = intentAmount / 100;
       console.log(
-        `🕵️ Buscando pagamento de R$ ${expectedAmountFloat} nos últimos 10 min...`
+        `🕵️ Buscando pagamento de R$ ${expectedAmountFloat.toFixed(2)} nos últimos 15 min...`
       );
 
-      const urlSearch = `https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&limit=10&range=date_created:NOW-10MINUTES:NOW`;
+      // Busca nos últimos 15 minutos (mais tempo para capturar)
+      const urlSearch = `https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&limit=20&range=date_created:NOW-15MINUTES:NOW`;
       const respSearch = await fetch(urlSearch, {
         headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
       });
       const dataSearch = await respSearch.json();
       const payments = dataSearch.results || [];
 
-      // Procura se algum pagamento recente APROVADO tem o MESMO VALOR
-      const found = payments.find(
-        (p) =>
-          (p.status === "approved" || p.status === "authorized") &&
-          Math.round(p.transaction_amount * 100) === intentAmount
-      );
+      console.log(`📋 Encontrados ${payments.length} pagamentos recentes`);
+
+      // Procura pagamento aprovado com MESMO VALOR
+      const found = payments.find((p) => {
+        const amountMatch = Math.round(p.transaction_amount * 100) === intentAmount;
+        const statusApproved = p.status === "approved" || p.status === "authorized";
+        
+        if (amountMatch) {
+          console.log(`💰 Pagamento ${p.id}: R$ ${p.transaction_amount} | Status: ${p.status}`);
+        }
+        
+        return statusApproved && amountMatch;
+      });
 
       if (found) {
-        console.log(`✅ PAGAMENTO ENCONTRADO POR VALOR! ID: ${found.id}`);
+        console.log(`✅ PAGAMENTO APROVADO ENCONTRADO! ID: ${found.id} | Valor: R$ ${found.transaction_amount}`);
 
-        // Tenta destravar a maquininha já que pagou
+        // Limpa a intent da maquininha para liberar
         try {
           await fetch(urlIntent, {
             method: "DELETE",
             headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
           });
-        } catch (e) {}
+          console.log(`🧹 Intent ${paymentId} deletada após encontrar pagamento ${found.id}`);
+        } catch (e) {
+          console.warn("Aviso ao deletar intent:", e.message);
+        }
 
-        return res.json({ status: "approved" });
+        return res.json({ status: "approved", paymentId: found.id });
+      } else {
+        console.log(`⏳ Nenhum pagamento aprovado com valor R$ ${expectedAmountFloat.toFixed(2)} encontrado ainda`);
       }
     }
 
+    // Se a intent foi cancelada/erro, informa ao frontend
+    if (dataIntent.state === "CANCELED" || dataIntent.state === "ERROR") {
+      console.log(`❌ Intent em estado: ${dataIntent.state}`);
+      return res.json({ status: "canceled" });
+    }
+
+    // Ainda pendente
     res.json({ status: "pending" });
   } catch (error) {
-    console.error("Erro Status:", error);
+    console.error("❌ Erro ao verificar status:", error.message);
     res.json({ status: "pending" });
   }
 });

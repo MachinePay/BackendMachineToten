@@ -85,14 +85,25 @@ git push origin main
 ### 1. Adicionar Variável de Ambiente no Vercel
 - [ ] Acessar projeto no Vercel
 - [ ] Ir em "Settings" → "Environment Variables"
-- [ ] Adicionar: `NEXT_PUBLIC_API_URL` = `https://kiosk-backend.onrender.com`
-- [ ] Salvar e fazer redeploy
+- [ ] Adicionar a variável correta:
+  - **Vite/React**: `VITE_API_URL` = `https://kiosk-backend.onrender.com`
+  - **Next.js**: `NEXT_PUBLIC_API_URL` = `https://kiosk-backend.onrender.com`
+- [ ] Marcar os 3 ambientes: Production, Preview, Development
+- [ ] Salvar
 
-### 2. Atualizar FRONTEND_URL no Render
+### 2. Redeploy no Vercel
+- [ ] Ir em "Deployments"
+- [ ] Clicar nos 3 pontinhos → "Redeploy"
+- [ ] Aguardar build (1-2 minutos)
+
+### 3. Atualizar FRONTEND_URL no Render
 - [ ] Copiar URL do frontend Vercel (ex: `https://seu-app.vercel.app`)
 - [ ] Voltar ao Render → Environment
 - [ ] Atualizar `FRONTEND_URL` com a URL do Vercel
+- [ ] Incluir variações: `https://app.vercel.app,https://app-git-main.vercel.app`
 - [ ] Salvar (trigger redeploy automático)
+
+> ⚠️ **Erro de conexão?** Consulte: [`VERCEL_CONNECTION_GUIDE.md`](./VERCEL_CONNECTION_GUIDE.md)
 
 ---
 

@@ -77,28 +77,36 @@ No dashboard do Render, adicione as seguintes variáveis de ambiente:
 
 ## 🔗 Conectar com Frontend no Vercel
 
-### No seu Frontend (Vercel):
+### Configuração Rápida:
 
-1. Adicione a variável de ambiente no Vercel:
-   - `NEXT_PUBLIC_API_URL` (ou equivalente): `https://kiosk-backend.onrender.com`
+1. **Adicione a variável no Vercel:**
+   - **Vite/React**: `VITE_API_URL` = `https://kiosk-backend.onrender.com`
+   - **Next.js**: `NEXT_PUBLIC_API_URL` = `https://kiosk-backend.onrender.com`
+   - Marque: Production, Preview, Development
 
-2. No código do frontend, use a variável:
+2. **No código do frontend:**
 ```javascript
+// Vite
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
+// Next.js
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-// Exemplo de chamada
+// Uso
 fetch(`${API_URL}/api/menu`)
   .then(res => res.json())
   .then(data => console.log(data));
 ```
 
-### Atualizar CORS no Backend:
+3. **Redeploy no Vercel**
 
-Depois de fazer deploy do frontend no Vercel, atualize a variável `FRONTEND_URL` no Render com a URL real do Vercel:
+4. **Atualizar CORS no Render:**
+   - Atualize `FRONTEND_URL` com a URL do Vercel:
+   ```
+   FRONTEND_URL=https://seu-app.vercel.app,https://seu-app-git-main.vercel.app
+   ```
 
-```
-FRONTEND_URL=https://seu-app.vercel.app,https://seu-app-git-main.vercel.app
-```
+> ⚠️ **Problema de conexão?** Veja o guia completo: [`VERCEL_CONNECTION_GUIDE.md`](./VERCEL_CONNECTION_GUIDE.md)
 
 ## 🧪 Testar a API
 
