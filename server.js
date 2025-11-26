@@ -762,18 +762,64 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       console.log(`🔍 Buscando por external_reference: ${dataIntent.additional_info.external_reference}`);
     }
 
-    // Verifica estados finalizados
+    // Verifica estados finalizados - LIMPA AGRESSIVAMENTE
     if (dataIntent.state === "FINISHED" || dataIntent.state === "PROCESSED") {
       console.log(`✅ Intent em estado finalizado: ${dataIntent.state}`);
+      console.log(`🚨 ATENÇÃO: Pagamento concluído mas ainda na fila! Limpando TUDO...`);
       
-      // Limpa a intent
+      // Cancelamento múltiplo forçado
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          const delResp = await fetch(urlIntent, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          });
+          
+          if (delResp.ok || delResp.status === 404) {
+            console.log(`✅ Tentativa ${attempt}: Intent ${paymentId} removida`);
+            break;
+          }
+          
+          if (attempt < 5) {
+            console.log(`⚠️ Tentativa ${attempt} falhou, tentando novamente...`);
+            await new Promise(r => setTimeout(r, 300));
+          }
+        } catch (e) {
+          if (attempt < 5) await new Promise(r => setTimeout(r, 300));
+        }
+      }
+      
+      // LIMPA TODA A FILA para evitar botão verde voltar ao pagamento
       try {
-        await fetch(urlIntent, {
-          method: "DELETE",
+        const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+        const listResp = await fetch(listUrl, {
           headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
         });
-        console.log(`🧹 Intent ${paymentId} deletada após estado ${dataIntent.state}`);
-      } catch (e) {}
+        
+        if (listResp.ok) {
+          const listData = await listResp.json();
+          const events = listData.events || [];
+          
+          console.log(`🔍 Verificando fila completa: ${events.length} intent(s) encontrada(s)`);
+          
+          for (const ev of events) {
+            const iId = ev.payment_intent_id || ev.id;
+            try {
+              await fetch(`${listUrl}/${iId}`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+              });
+              console.log(`  🗑️ Intent ${iId} removida da fila`);
+            } catch (e) {
+              console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
+            }
+          }
+          
+          console.log(`✅ TODAS as intents removidas - Botão verde não volta mais ao pagamento!`);
+        }
+      } catch (e) {
+        console.log(`⚠️ Erro ao limpar fila completa:`, e.message);
+      }
       
       return res.json({ status: "approved" });
     }
@@ -931,6 +977,67 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
     }
   } catch (error) {
     console.error("❌ Erro ao cancelar pagamento:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Limpar TODA a fila de pagamentos da maquininha (chamar após pagamento aprovado)
+app.post("/api/payment/clear-queue", async (req, res) => {
+  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+    return res.json({ success: true, cleared: 0 });
+  }
+
+  try {
+    console.log(`🧹 [CLEAR QUEUE] Limpando TODA a fila da Point Pro 2...`);
+    
+    const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+    const listResp = await fetch(listUrl, {
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+    });
+    
+    if (!listResp.ok) {
+      return res.json({ success: false, error: "Erro ao listar intents" });
+    }
+    
+    const listData = await listResp.json();
+    const events = listData.events || [];
+    
+    console.log(`🔍 Encontradas ${events.length} intent(s) na fila`);
+    
+    let cleared = 0;
+    
+    for (const ev of events) {
+      const iId = ev.payment_intent_id || ev.id;
+      const state = ev.state;
+      
+      try {
+        const delResp = await fetch(`${listUrl}/${iId}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        });
+        
+        if (delResp.ok || delResp.status === 404) {
+          console.log(`  ✅ Intent ${iId} (${state}) removida`);
+          cleared++;
+        }
+      } catch (e) {
+        console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
+      }
+      
+      // Pequeno delay entre remoções
+      await new Promise(r => setTimeout(r, 200));
+    }
+    
+    console.log(`✅ [CLEAR QUEUE] ${cleared} intent(s) removida(s) - Point Pro 2 completamente limpa!`);
+    
+    res.json({ 
+      success: true, 
+      cleared: cleared,
+      message: `${cleared} pagamento(s) removido(s) da fila` 
+    });
+    
+  } catch (error) {
+    console.error("❌ Erro ao limpar fila:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
