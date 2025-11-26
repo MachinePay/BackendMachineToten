@@ -630,7 +630,7 @@ app.post("/api/payment/create-pix", async (req, res) => {
   }
 });
 
-// CRIAR PAGAMENTO NA MAQUININHA (Orders API com type: "point")
+// CRIAR PAGAMENTO NA MAQUININHA (Point Integration API - volta ao original)
 app.post("/api/payment/create", async (req, res) => {
   const { amount, description, orderId, paymentMethod } = req.body;
 
@@ -640,71 +640,67 @@ app.post("/api/payment/create", async (req, res) => {
   }
 
   try {
-    console.log(`💳 Criando order na maquininha ${MP_DEVICE_ID}...`);
+    console.log(`💳 Criando payment intent na Point ${MP_DEVICE_ID}...`);
     console.log(`💰 Método solicitado: ${paymentMethod || 'todos'}`);
 
-    // Mapeamento de método de pagamento
-    const paymentTypeMap = {
-      'pix': 'pix',
-      'debit': 'debit_card',
-      'credit': 'credit_card'
-    };
-
-    // Configurar filtro de forma de pagamento
-    const orderPayload = {
-      type: "point", // ← CHAVE: Envia para maquininha física!
-      transaction_amount: parseFloat(amount),
+    // Payload simplificado para Point Integration API
+    const payload = {
+      amount: Math.round(parseFloat(amount) * 100), // Centavos
       description: description || `Pedido ${orderId}`,
-      external_reference: orderId,
-      notification_url: `${process.env.FRONTEND_URL || 'https://backendkioskpro.onrender.com'}/api/notifications/mercadopago`,
-      transactions: {
-        payments: [
-          {
-            amount: parseFloat(amount).toFixed(2),
-            payment_method: {
-              id: paymentTypeMap[paymentMethod] || null, // null = mostra todos
-              type: paymentTypeMap[paymentMethod] || null,
-            }
-          }
-        ]
+      additional_info: {
+        external_reference: orderId,
+        print_on_terminal: true,
       }
     };
 
-    console.log(`📤 Payload Order (Point):`, JSON.stringify(orderPayload, null, 2));
+    // Se método especificado, adiciona filtro
+    if (paymentMethod) {
+      const paymentTypeMap = {
+        'pix': null, // PIX não funciona no filtro - Point mostra todas opções
+        'debit': 'debit_card',
+        'credit': 'credit_card'
+      };
 
-    // Gera chave idempotente única para esta transação
-    const idempotencyKey = `${orderId}_${Date.now()}`;
+      const type = paymentTypeMap[paymentMethod];
+      
+      if (type) {
+        payload.payment = {
+          type: type,
+          installments: paymentMethod === 'credit' ? 1 : undefined,
+          installments_cost: paymentMethod === 'credit' ? 'buyer' : undefined
+        };
+        console.log(`🎯 Filtro ativo: ${type}`);
+      } else {
+        console.log(`⚠️ PIX selecionado - Point mostrará todas as opções`);
+      }
+    }
 
-    const response = await fetch('https://api.mercadopago.com/v1/orders', {
+    console.log(`📤 Payload Point Integration:`, JSON.stringify(payload, null, 2));
+
+    const url = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
         'Content-Type': 'application/json',
-        'X-Idempotency-Key': idempotencyKey, // ← OBRIGATÓRIO
-        'X-Device-Id': MP_DEVICE_ID // Identifica a maquininha
       },
-      body: JSON.stringify(orderPayload),
+      body: JSON.stringify(payload),
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("❌ Erro ao criar order na Point:", JSON.stringify(data, null, 2));
+      console.error("❌ Erro ao criar payment intent:", JSON.stringify(data, null, 2));
       console.error(`📡 Status HTTP: ${response.status}`);
-      console.error(`🔑 Headers enviados:`, {
-        'Authorization': MP_ACCESS_TOKEN ? `Bearer ${MP_ACCESS_TOKEN.substring(0, 20)}...` : 'AUSENTE',
-        'X-Idempotency-Key': idempotencyKey,
-        'X-Device-Id': MP_DEVICE_ID
-      });
       throw new Error(data.message || JSON.stringify(data.errors || data));
     }
 
-    console.log(`✅ Order criada na Point! ID: ${data.id}`);
-    console.log(`📱 Status: ${data.status}`);
+    console.log(`✅ Payment intent criado! ID: ${data.id}`);
+    console.log(`📱 Status: ${data.state}`);
 
     res.json({ 
       id: data.id, 
-      status: "pending",
+      status: "open",
       type: 'point'
     });
 
