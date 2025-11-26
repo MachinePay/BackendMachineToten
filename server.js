@@ -618,31 +618,28 @@ app.post("/api/payment/create", async (req, res) => {
     if (paymentMethod) {
       console.log(`🎯 Point Smart 2 - FORÇANDO método: ${paymentMethod}`);
       
-      // Configuração específica por método
+      // Configuração específica por método - APENAS campos aceitos pela API
       if (paymentMethod === 'pix') {
         payload.payment = {
-          type: 'pix',
-          // Point Smart 2: força apenas PIX
+          type: 'pix'
         };
+        console.log(`✅ Point Smart 2 - Forçando apenas PIX`);
       } else if (paymentMethod === 'debit') {
         payload.payment = {
           type: 'debit_card',
-          installments: 1,
-          // Point Smart 2: força apenas débito
+          installments: 1
         };
+        console.log(`✅ Point Smart 2 - Forçando apenas Débito`);
       } else if (paymentMethod === 'credit') {
         payload.payment = {
           type: 'credit_card',
           installments: 1,
-          installments_cost: 'buyer',
-          // Point Smart 2: força apenas crédito
+          installments_cost: 'buyer'
         };
+        console.log(`✅ Point Smart 2 - Forçando apenas Crédito`);
       }
       
-      // IMPORTANTE: Point Smart requer operating_mode para forçar método único
-      payload.payment.operating_mode = 'PDV'; // Modo PDV força integração
-      
-      console.log(`✅ Point Smart 2 configurada - Apenas ${payload.payment.type} será aceito`);
+      console.log(`🎯 Método configurado: ${payload.payment.type}`);
     } else {
       console.log(`⚠️ ATENÇÃO: Nenhum método especificado - Point vai mostrar TODAS as opções!`);
     }
