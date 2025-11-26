@@ -166,6 +166,14 @@ app.get("/health", (req, res) =>
   res.status(200).json({ status: "ok", db: dbType })
 );
 
+// Rota de teste do webhook (para verificar se está acessível)
+app.get("/api/webhooks/mercadopago", (req, res) => {
+  res.status(200).json({ 
+    message: "Webhook endpoint ativo! Use POST para enviar notificações.",
+    ready: true 
+  });
+});
+
 // --- Rotas da API (Menu, Usuários, Pedidos) ---
 
 app.get("/api/menu", async (req, res) => {
@@ -296,13 +304,19 @@ app.get("/api/user-orders", async (req, res) => {
 // --- WEBHOOK MERCADO PAGO (Notificação Instantânea) ---
 
 app.post("/api/webhooks/mercadopago", async (req, res) => {
-  console.log("🔔 Webhook recebido do Mercado Pago:", JSON.stringify(req.body, null, 2));
+  const timestamp = new Date().toISOString();
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`🔔 [${timestamp}] WEBHOOK RECEBIDO DO MERCADO PAGO`);
+  console.log(`${"=".repeat(60)}`);
+  console.log("Headers:", JSON.stringify(req.headers, null, 2));
+  console.log("Body:", JSON.stringify(req.body, null, 2));
+  console.log(`${"=".repeat(60)}\n`);
   
   try {
     const { action, data, type } = req.body;
 
-    // Responde rápido ao MP (obrigatório)
-    res.status(200).send("OK");
+    // Responde rápido ao MP (obrigatório - SEMPRE 200 OK)
+    res.status(200).json({ success: true, received: true });
 
     // Processa notificação em background
     if (action === "payment.created" || action === "payment.updated") {

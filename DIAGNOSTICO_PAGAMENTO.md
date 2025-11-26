@@ -57,31 +57,79 @@ Aguarde 2-3 minutos para o Render fazer o deploy.
 
 ### 2️⃣ **CONFIGURAR WEBHOOK NO MERCADO PAGO** (CRUCIAL!)
 
-1. **Acesse o Painel do Mercado Pago:**
-   - https://www.mercadopago.com.br/developers/panel/app
+#### **Passo 1: Pegar a URL correta do Render**
 
-2. **Selecione seu Aplicativo**
+1. Acesse: https://dashboard.render.com
+2. Clique no seu backend (ex: `kiosk-backend` ou `backendkioskpro`)
+3. **Copie a URL** que aparece no topo (ex: `https://backendkioskpro.onrender.com`)
+4. Adicione no final: `/api/webhooks/mercadopago`
+5. **URL final**: `https://backendkioskpro.onrender.com/api/webhooks/mercadopago`
+
+#### **Passo 2: Testar a URL ANTES de configurar no MP**
+
+Abra no navegador:
+```
+https://backendkioskpro.onrender.com/api/webhooks/mercadopago
+```
+
+**✅ Resposta esperada:**
+```json
+{
+  "message": "Webhook endpoint ativo! Use POST para enviar notificações.",
+  "ready": true
+}
+```
+
+**❌ Se retornar 404:**
+- Aguarde 1-2 minutos (deploy pode não ter terminado)
+- Acorde o backend acessando: `https://backendkioskpro.onrender.com/health`
+- Aguarde 30 segundos (cold start)
+- Tente novamente
+
+#### **Passo 3: Configurar no Mercado Pago**
+
+1. **Acesse:** https://www.mercadopago.com.br/developers/panel/app
+
+2. **Selecione seu Aplicativo** (modo produção)
 
 3. **Vá em "Webhooks" ou "Notificações"**
 
-4. **Configure a URL do Webhook:**
+4. **Clique em "Configurar URL" ou "Adicionar"**
+
+5. **Cole a URL:**
    ```
-   https://SEU-BACKEND.onrender.com/api/webhooks/mercadopago
+   https://backendkioskpro.onrender.com/api/webhooks/mercadopago
    ```
-   *(Substitua SEU-BACKEND pelo nome real do seu serviço no Render)*
 
-5. **Selecione os Eventos:**
-   - ✅ `payment` (Pagamentos)
-   - Especificamente: `payment.created` e `payment.updated`
+6. **Selecione os Eventos:**
+   - ✅ `payment` (ou `Pagamentos`)
+   - ✅ Modo: **Produção**
 
-6. **Salve a Configuração**
+7. **Salve a Configuração**
 
-7. **Teste o Webhook:**
-   - No painel do MP, há botão "Enviar Teste"
-   - Verifique os logs do Render se aparecer:
-     ```
-     🔔 Webhook recebido do Mercado Pago
-     ```
+#### **Passo 4: Testar o Webhook**
+
+1. **Abra os logs do Render** em outra aba:
+   - Render → Seu Backend → **Logs**
+
+2. **No painel do MP, clique em "Enviar Teste"** ou "Teste"
+
+3. **Observe os logs do Render:**
+
+   **✅ Sucesso:**
+   ```
+   ============================================================
+   🔔 [2025-11-26...] WEBHOOK RECEBIDO DO MERCADO PAGO
+   ============================================================
+   Body: {
+     "action": "payment.updated",
+     "data": {"id": "123456"}
+   }
+   ```
+
+   **❌ Erro 404:**
+   - URL incorreta ou backend dormindo
+   - Siga troubleshooting acima
 
 ### 3️⃣ Testar com Logs Abertos
 
@@ -127,36 +175,106 @@ Aguarde 2-3 minutos para o Render fazer o deploy.
 
 ## 🐛 Troubleshooting
 
-### Problema 1: Webhook não recebe notificações
+### Problema 1: Erro 404 ao testar webhook
 
-**Sintomas:**
-- Não aparece `🔔 Webhook recebido` nos logs
-- Pagamento demora 2-10 segundos para ser confirmado
+**Sintoma:**
+```
+404 - Not Found
+Não foi possível encontrar o URL informado.
+```
 
-**Soluções:**
+**Causa**: Deploy ainda não terminou ou URL incorreta.
 
-**A) Verificar URL do Webhook**
+**Soluções (Passo a passo):**
+
+**A) Verificar se o deploy terminou no Render**
+1. Acesse: https://dashboard.render.com
+2. Selecione seu backend
+3. Vá em **Events** ou **Logs**
+4. Procure por: `✅ Servidor rodando na porta...`
+5. Se não aparecer, aguarde mais 1-2 minutos
+
+**B) Testar a URL manualmente no navegador**
+
+Antes de configurar no MP, teste no navegador:
+
+1. **Teste o backend geral:**
+   ```
+   https://SEU-BACKEND.onrender.com/health
+   ```
+   Deve retornar: `{"status":"ok","db":"PostgreSQL (Render)"}`
+
+2. **Teste o webhook endpoint (GET):**
+   ```
+   https://SEU-BACKEND.onrender.com/api/webhooks/mercadopago
+   ```
+   Deve retornar:
+   ```json
+   {
+     "message": "Webhook endpoint ativo! Use POST para enviar notificações.",
+     "ready": true
+   }
+   ```
+
+3. **Se retornar 404** em ambos:
+   - Deploy falhou ou ainda não terminou
+   - Nome do serviço no Render está diferente da URL
+   - Verifique o nome exato em: Render → Seu Serviço → topo da página
+
+**C) Verificar URL EXATA do webhook**
+
+A URL deve ser EXATAMENTE:
 ```
 https://SEU-BACKEND.onrender.com/api/webhooks/mercadopago
 ```
-- ✅ Usa HTTPS (obrigatório)
-- ✅ Sem barra no final
-- ✅ Nome do backend correto
 
-**B) Testar Manualmente**
-No painel do Mercado Pago → Webhooks → "Enviar Teste"
+❌ **ERROS COMUNS:**
+- `https://SEU-BACKEND.onrender.com/webhooks/mercadopago` (falta `/api`)
+- `https://SEU-BACKEND.onrender.com/api/webhooks/mercadopago/` (barra no final)
+- `http://SEU-BACKEND.onrender.com/api/webhooks/mercadopago` (HTTP em vez de HTTPS)
+- Nome do backend errado
 
-**C) Verificar Logs do MP**
+**D) Render em Sleep Mode (Cold Start)**
+
+O plano free "dorme" após 15min de inatividade:
+
+1. **Primeira solução - Acordar o backend:**
+   - Acesse a URL do health no navegador:
+     ```
+     https://SEU-BACKEND.onrender.com/health
+     ```
+   - Aguarde 30 segundos (cold start)
+   - Tente o teste do webhook novamente no MP
+
+2. **Prevenir sleep durante testes:**
+   - Mantenha a aba do health aberta
+   - Ou use um serviço de ping gratuito
+
+**E) Copiar URL correta do Render**
+
+1. Render Dashboard → Seu Serviço
+2. No topo da página, copie a URL (ex: `https://kiosk-backend-abc123.onrender.com`)
+3. Adicione `/api/webhooks/mercadopago`
+4. URL final: `https://kiosk-backend-abc123.onrender.com/api/webhooks/mercadopago`
+
+---
+
+### Problema 2: Webhook não recebe notificações (mas teste passou)
+
+**Sintomas:**
+- Teste manual do MP retorna 200 OK
+- Mas em pagamento real não aparece `🔔 Webhook recebido` nos logs
+
+**Soluções:**
+
+**A) Verificar Logs do MP**
 No painel → Webhooks → Ver histórico de notificações
 - Se houver erro 4xx/5xx, há problema na URL
-- Se houver timeout, Render pode estar em sleep
+- Se houver timeout, backend está muito lento
 
-**D) Render em Sleep Mode?**
-O plano free do Render "dorme" após 15min de inatividade.
-- Primeira requisição demora ~30s (cold start)
-- Webhook pode falhar durante esse tempo
-- **Solução temporária**: Mantenha backend acordado
-- **Solução permanente**: Upgrade para plano pago
+**B) Verificar configuração de eventos**
+- Deve estar marcado: `payment` (ou especificamente `payment.created` e `payment.updated`)
+- Modo: **Produção** (não desenvolvimento)
 
 ---
 
