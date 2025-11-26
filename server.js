@@ -652,7 +652,7 @@ app.post("/api/payment/create", async (req, res) => {
           last_name: "Totem"
         },
         external_reference: orderId,
-        notification_url: `${process.env.FRONTEND_URL || 'https://backendkioskpro.onrender.com'}/api/notifications/mercadopago`
+        notification_url: "https://backendkioskpro.onrender.com/api/notifications/mercadopago"
       };
       
       console.log(`📤 Payload PIX:`, JSON.stringify(pixPayload, null, 2));
