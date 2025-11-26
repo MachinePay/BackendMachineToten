@@ -563,8 +563,81 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
 
 // --- INTEGRAÇÃO MERCADO PAGO POINT (Smart - Versão Final) ---
 
+// CRIAR PAGAMENTO PIX (QR Code - Orders API)
+app.post("/api/payment/create-pix", async (req, res) => {
+  const { amount, description, orderId } = req.body;
+
+  if (!MP_ACCESS_TOKEN) {
+    console.error("Faltam credenciais do Mercado Pago");
+    return res.json({ id: `mock_pix_${Date.now()}`, status: "pending" });
+  }
+
+  try {
+    console.log(`💚 Criando pagamento PIX de R$ ${amount}...`);
+
+    const orderPayload = {
+      type: "online",
+      transaction_amount: parseFloat(amount),
+      description: description || `Pedido ${orderId}`,
+      external_reference: orderId,
+      notification_url: `${process.env.FRONTEND_URL || 'https://backendkioskpro.onrender.com'}/api/notifications/mercadopago`,
+      payment_methods: {
+        excluded_payment_types: [
+          { id: "credit_card" },
+          { id: "debit_card" },
+          { id: "ticket" },
+          { id: "bank_transfer" }
+        ],
+        installments: 1
+      }
+    };
+
+    const response = await fetch('https://api.mercadopago.com/v1/orders', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(orderPayload),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Erro ao criar order PIX:", data);
+      throw new Error(data.message || "Erro ao criar PIX");
+    }
+
+    console.log(`✅ PIX criado! Order ID: ${data.id}`);
+    console.log(`📱 QR Code: ${data.qr_code}`);
+
+    res.json({
+      id: data.id,
+      status: "pending",
+      qr_code: data.qr_code,
+      qr_code_base64: data.qr_code_base64,
+      ticket_url: data.ticket_url,
+      type: 'pix'
+    });
+
+  } catch (error) {
+    console.error("Erro ao criar PIX:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// CRIAR PAGAMENTO CARTÃO (Maquininha - Point Integration API)
 app.post("/api/payment/create", async (req, res) => {
   const { amount, description, orderId, paymentMethod } = req.body;
+
+  // Se for PIX, redirecionar para endpoint correto
+  if (paymentMethod === 'pix') {
+    console.log(`🔀 PIX detectado - redirecionando para /api/payment/create-pix`);
+    return res.status(400).json({ 
+      error: "Use /api/payment/create-pix para pagamentos PIX",
+      redirect: "/api/payment/create-pix"
+    });
+  }
 
   if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
     console.error("Faltam credenciais do Mercado Pago");
@@ -603,7 +676,8 @@ app.post("/api/payment/create", async (req, res) => {
       /* Silencioso */
     }
 
-    // 2. Preparar payload com método de pagamento específico para Point Smart 2
+    // 2. Preparar payload SIMPLES para maquininha (sem filtro de método)
+    // A Point Smart 2 vai mostrar todas as opções disponíveis
     const payload = {
       amount: Math.round(amount * 100), // Valor em Centavos
       description: description || `Pedido ${orderId}`,
@@ -613,42 +687,7 @@ app.post("/api/payment/create", async (req, res) => {
       }
     };
 
-    // FORÇAR método de pagamento específico (Point Smart 2)
-    // Isso impede que a maquininha mostre outras opções
-    if (paymentMethod) {
-      console.log(`🎯 Point Smart 2 - FORÇANDO método: ${paymentMethod}`);
-      
-      // Configuração por método - API Point só aceita: credit_card, debit_card, voucher_card
-      // PIX não é suportado como filtro
-      
-      if (paymentMethod === 'debit') {
-        payload.payment = {
-          type: 'debit_card',
-          installments: 1
-        };
-        console.log(`✅ DÉBITO - Mostrará APENAS débito na Point`);
-      } else if (paymentMethod === 'credit') {
-        payload.payment = {
-          type: 'credit_card',
-          installments: 1,
-          installments_cost: 'buyer'
-        };
-        console.log(`✅ CRÉDITO - Mostrará APENAS crédito na Point`);
-      } else if (paymentMethod === 'pix') {
-        // PIX: NÃO enviamos campo "payment" para que a Point mostre TODAS as opções
-        // incluindo PIX, Débito, Crédito
-        console.log(`✅ PIX escolhido - Point mostrará TODAS opções (incluindo PIX)`);
-        console.log(`📌 INSTRUIR USUÁRIO: Selecionar PIX na maquininha`);
-      }
-      
-      if (payload.payment) {
-        console.log(`🔒 Filtro ativo: ${payload.payment.type}`);
-      } else {
-        console.log(`🔓 Sem filtro - todas as opções disponíveis`);
-      }
-    } else {
-      console.log(`⚠️ ATENÇÃO: Nenhum método especificado - Point vai mostrar TODAS as opções!`);
-    }
+    console.log(`💳 Payload para Point: R$ ${(payload.amount / 100).toFixed(2)}`);
 
     // 3. Cria nova intenção
     const url = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
@@ -675,10 +714,45 @@ app.post("/api/payment/create", async (req, res) => {
   }
 });
 
+// Verificar status PIX (Order API)
+app.get("/api/payment/status-pix/:orderId", async (req, res) => {
+  const { orderId } = req.params;
+
+  if (orderId.startsWith("mock_pix")) return res.json({ status: "approved" });
+  if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token MP" });
+
+  try {
+    console.log(`🔍 Verificando status da order PIX: ${orderId}`);
+
+    const url = `https://api.mercadopago.com/v1/orders/${orderId}`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+    });
+
+    const order = await response.json();
+
+    console.log(`💚 Order PIX ${orderId} | Status: ${order.status}`);
+
+    // Status possíveis: opened, closed, expired, cancelled
+    if (order.status === 'closed') {
+      return res.json({ status: "approved", orderId: order.id });
+    } else if (order.status === 'expired' || order.status === 'cancelled') {
+      return res.json({ status: "canceled" });
+    }
+
+    res.json({ status: "pending" });
+  } catch (error) {
+    console.error("❌ Erro ao verificar PIX:", error.message);
+    res.json({ status: "pending" });
+  }
+});
+
+// Verificar status cartão (Point Integration API)
 app.get("/api/payment/status/:paymentId", async (req, res) => {
   const { paymentId } = req.params;
 
   if (paymentId.startsWith("mock_pay")) return res.json({ status: "approved" });
+  if (paymentId.startsWith("mock_pix")) return res.json({ status: "approved" });
   if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token MP" });
 
   try {
