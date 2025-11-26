@@ -689,8 +689,14 @@ app.post("/api/payment/create", async (req, res) => {
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("❌ Erro ao criar order na Point:", data);
-      throw new Error(data.message || "Erro ao criar pagamento");
+      console.error("❌ Erro ao criar order na Point:", JSON.stringify(data, null, 2));
+      console.error(`📡 Status HTTP: ${response.status}`);
+      console.error(`🔑 Headers enviados:`, {
+        'Authorization': MP_ACCESS_TOKEN ? `Bearer ${MP_ACCESS_TOKEN.substring(0, 20)}...` : 'AUSENTE',
+        'X-Idempotency-Key': idempotencyKey,
+        'X-Device-Id': MP_DEVICE_ID
+      });
+      throw new Error(data.message || JSON.stringify(data.errors || data));
     }
 
     console.log(`✅ Order criada na Point! ID: ${data.id}`);
@@ -704,7 +710,8 @@ app.post("/api/payment/create", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Erro Pagamento Point:", error);
-    res.status(500).json({ error: "Falha ao comunicar com maquininha" });
+    console.error("❌ Stack trace:", error.stack);
+    res.status(500).json({ error: error.message || "Falha ao comunicar com maquininha" });
   }
 });
 
@@ -842,17 +849,25 @@ app.post("/api/point/configure", async (req, res) => {
 // Verificar status da Point Smart 2
 app.get("/api/point/status", async (req, res) => {
   if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+    console.error("⚠️ Status Point: Credenciais não configuradas");
+    console.error(`MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN ? 'OK' : 'AUSENTE'}`);
+    console.error(`MP_DEVICE_ID: ${MP_DEVICE_ID || 'AUSENTE'}`);
     return res.json({ connected: false, error: "Credenciais não configuradas" });
   }
 
   try {
+    console.log(`🔍 Verificando status da Point: ${MP_DEVICE_ID}`);
+    
     const deviceUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}`;
     const response = await fetch(deviceUrl, {
       headers: { 'Authorization': `Bearer ${MP_ACCESS_TOKEN}` },
     });
     
+    console.log(`📡 Resposta API Point: Status ${response.status}`);
+    
     if (response.ok) {
       const device = await response.json();
+      console.log(`✅ Point encontrada:`, device);
       
       return res.json({
         connected: true,
@@ -862,10 +877,13 @@ app.get("/api/point/status", async (req, res) => {
         model: device.model || 'Point Smart 2',
       });
     } else {
-      return res.json({ connected: false, error: "Point não encontrada" });
+      const errorData = await response.json();
+      console.error(`❌ Erro ao buscar Point:`, errorData);
+      return res.json({ connected: false, error: "Point não encontrada", details: errorData });
     }
     
   } catch (error) {
+    console.error("❌ Exceção ao verificar Point:", error);
     res.status(500).json({ connected: false, error: error.message });
   }
 });
