@@ -634,66 +634,59 @@ app.post("/api/payment/create-pix", async (req, res) => {
 app.post("/api/payment/create", async (req, res) => {
   const { amount, description, orderId, paymentMethod } = req.body;
 
-  // ✅ DETECÇÃO AUTOMÁTICA: Se for PIX, redireciona para endpoint de QR Code
+  // ✅ DETECÇÃO AUTOMÁTICA: Se for PIX, gera QR Code (Payments API)
   if (paymentMethod === 'pix') {
-    console.log(`🔀 PIX detectado - redirecionando para QR Code (Orders API)`);
+    console.log(`🔀 PIX detectado - gerando QR Code (Payments API)`);
     
     try {
-      const pixPayload = { amount, description, orderId };
-      
-      // Gera chave idempotente única para esta transação PIX
+      // Gera chave idempotente única
       const idempotencyKey = `pix_${orderId}_${Date.now()}`;
 
-      const orderPayload = {
-        type: "online",
-        external_reference: orderId,
-        notification_url: `${process.env.FRONTEND_URL || 'https://backendkioskpro.onrender.com'}/api/notifications/mercadopago`,
-        transactions: {
-          payments: [
-            {
-              amount: parseFloat(amount).toFixed(2),
-              description: description || `Pedido ${orderId}`
-            }
-          ]
+      const pixPayload = {
+        transaction_amount: parseFloat(amount),
+        description: description || `Pedido ${orderId}`,
+        payment_method_id: "pix",
+        payer: {
+          email: "cliente@totem.com.br",
+          first_name: "Cliente",
+          last_name: "Totem"
         },
-        config: {
-          payment_method: {
-            default_id: "pix"
-          }
-        }
+        external_reference: orderId,
+        notification_url: `${process.env.FRONTEND_URL || 'https://backendkioskpro.onrender.com'}/api/notifications/mercadopago`
       };
       
-      console.log(`📤 Payload PIX:`, JSON.stringify(orderPayload, null, 2));
+      console.log(`📤 Payload PIX:`, JSON.stringify(pixPayload, null, 2));
 
-      const response = await fetch('https://api.mercadopago.com/v1/orders', {
+      const response = await fetch('https://api.mercadopago.com/v1/payments', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
           'Content-Type': 'application/json',
           'X-Idempotency-Key': idempotencyKey,
         },
-        body: JSON.stringify(orderPayload),
+        body: JSON.stringify(pixPayload),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        console.error("Erro ao criar order PIX:", data);
+        console.error("❌ Erro ao criar PIX:", data);
         throw new Error(data.message || "Erro ao criar PIX");
       }
 
-      console.log(`✅ PIX QR Code criado! Order ID: ${data.id}`);
+      console.log(`✅ PIX QR Code criado! Payment ID: ${data.id}`);
+      console.log(`📱 QR Code:`, data.point_of_interaction?.transaction_data?.qr_code?.substring(0, 50));
 
       return res.json({
         id: data.id,
-        status: "pending",
-        qr_code: data.qr_code,
-        qr_code_base64: data.qr_code_base64,
-        ticket_url: data.ticket_url,
+        status: data.status,
+        qr_code: data.point_of_interaction?.transaction_data?.qr_code,
+        qr_code_base64: data.point_of_interaction?.transaction_data?.qr_code_base64,
+        ticket_url: data.point_of_interaction?.transaction_data?.ticket_url,
         type: 'pix'
       });
     } catch (error) {
-      console.error("Erro ao criar PIX:", error);
+      console.error("❌ Erro ao criar PIX:", error);
       return res.status(500).json({ error: error.message });
     }
   }
@@ -828,26 +821,26 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       return res.json({ status: "pending" });
     }
 
-    // 2. Se não é Payment Intent, tenta como Order (PIX)
-    console.log(`🔄 Não é Payment Intent, tentando como Order PIX...`);
-    const orderUrl = `https://api.mercadopago.com/v1/orders/${paymentId}`;
-    const orderResponse = await fetch(orderUrl, {
+    // 2. Se não é Payment Intent, tenta como Payment PIX
+    console.log(`🔄 Não é Payment Intent, tentando como Payment PIX...`);
+    const paymentUrl = `https://api.mercadopago.com/v1/payments/${paymentId}`;
+    const paymentResponse = await fetch(paymentUrl, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
 
-    if (orderResponse.ok) {
-      const order = await orderResponse.json();
-      console.log(`💚 Order ${paymentId} | Status: ${order.status}`);
+    if (paymentResponse.ok) {
+      const payment = await paymentResponse.json();
+      console.log(`💚 Payment ${paymentId} | Status: ${payment.status}`);
 
-      if (order.status === 'closed') {
-        console.log(`✅ Order PIX FECHADA - Pagamento aprovado!`);
-        return res.json({ status: "approved", orderId: order.id });
-      } else if (order.status === 'expired' || order.status === 'cancelled') {
-        console.log(`❌ Order ${order.status.toUpperCase()}`);
+      if (payment.status === 'approved') {
+        console.log(`✅ Payment PIX APROVADO!`);
+        return res.json({ status: "approved", paymentId: payment.id });
+      } else if (payment.status === 'cancelled' || payment.status === 'rejected') {
+        console.log(`❌ Payment ${payment.status.toUpperCase()}`);
         return res.json({ status: "canceled" });
       }
 
-      console.log(`⏳ Order ainda pendente`);
+      console.log(`⏳ Payment ainda pendente (${payment.status})`);
       return res.json({ status: "pending" });
     }
 
