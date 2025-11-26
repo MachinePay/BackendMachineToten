@@ -634,6 +634,67 @@ app.post("/api/payment/create-pix", async (req, res) => {
 app.post("/api/payment/create", async (req, res) => {
   const { amount, description, orderId, paymentMethod } = req.body;
 
+  // ✅ DETECÇÃO AUTOMÁTICA: Se for PIX, redireciona para endpoint de QR Code
+  if (paymentMethod === 'pix') {
+    console.log(`🔀 PIX detectado - redirecionando para QR Code (Orders API)`);
+    
+    try {
+      const pixPayload = { amount, description, orderId };
+      
+      // Gera chave idempotente única para esta transação PIX
+      const idempotencyKey = `pix_${orderId}_${Date.now()}`;
+
+      const orderPayload = {
+        type: "online",
+        transaction_amount: parseFloat(amount),
+        description: description || `Pedido ${orderId}`,
+        external_reference: orderId,
+        notification_url: `${process.env.FRONTEND_URL || 'https://backendkioskpro.onrender.com'}/api/notifications/mercadopago`,
+        payment_methods: {
+          excluded_payment_types: [
+            { id: "credit_card" },
+            { id: "debit_card" },
+            { id: "ticket" },
+            { id: "bank_transfer" }
+          ],
+          installments: 1
+        }
+      };
+
+      const response = await fetch('https://api.mercadopago.com/v1/orders', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json',
+          'X-Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify(orderPayload),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error("Erro ao criar order PIX:", data);
+        throw new Error(data.message || "Erro ao criar PIX");
+      }
+
+      console.log(`✅ PIX QR Code criado! Order ID: ${data.id}`);
+
+      return res.json({
+        id: data.id,
+        status: "pending",
+        qr_code: data.qr_code,
+        qr_code_base64: data.qr_code_base64,
+        ticket_url: data.ticket_url,
+        type: 'pix'
+      });
+    } catch (error) {
+      console.error("Erro ao criar PIX:", error);
+      return res.status(500).json({ error: error.message });
+    }
+  }
+
+  // ✅ CARTÕES: Segue para maquininha
   if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
     console.error("Faltam credenciais do Mercado Pago");
     return res.json({ id: `mock_pay_${Date.now()}`, status: "pending" });
@@ -653,10 +714,9 @@ app.post("/api/payment/create", async (req, res) => {
       }
     };
 
-    // Se método especificado, adiciona filtro
+    // Se método especificado (crédito/débito), adiciona filtro
     if (paymentMethod) {
       const paymentTypeMap = {
-        'pix': null, // PIX não funciona no filtro - Point mostra todas opções
         'debit': 'debit_card',
         'credit': 'credit_card'
       };
@@ -670,8 +730,6 @@ app.post("/api/payment/create", async (req, res) => {
           installments_cost: paymentMethod === 'credit' ? 'buyer' : undefined
         };
         console.log(`🎯 Filtro ativo: ${type}`);
-      } else {
-        console.log(`⚠️ PIX selecionado - Point mostrará todas as opções`);
       }
     }
 
@@ -711,47 +769,90 @@ app.post("/api/payment/create", async (req, res) => {
   }
 });
 
-// Verificar status ORDER (unificado para PIX e Point)
-app.get("/api/payment/status/:orderId", async (req, res) => {
-  const { orderId } = req.params;
+// Verificar status PAGAMENTO (híbrido: Order PIX ou Payment Intent Point)
+app.get("/api/payment/status/:paymentId", async (req, res) => {
+  const { paymentId } = req.params;
 
-  if (orderId.startsWith("mock_")) return res.json({ status: "approved" });
+  if (paymentId.startsWith("mock_")) return res.json({ status: "approved" });
   if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token MP" });
 
   try {
-    console.log(`🔍 Verificando status da order: ${orderId}`);
+    console.log(`🔍 Verificando status do pagamento: ${paymentId}`);
 
-    // 1. Busca a order
-    const url = `https://api.mercadopago.com/v1/orders/${orderId}`;
-    const response = await fetch(url, {
+    // 1. Tenta buscar como Payment Intent (Point Integration API)
+    const intentUrl = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
+    const intentResponse = await fetch(intentUrl, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
 
-    if (!response.ok) {
-      console.error(`❌ Erro ao buscar order ${orderId}: ${response.status}`);
+    if (intentResponse.ok) {
+      // É um Payment Intent (maquininha)
+      const intent = await intentResponse.json();
+      console.log(`💳 Payment Intent ${paymentId} | State: ${intent.state}`);
+
+      // Verifica se tem payment.id (pagamento aprovado)
+      if (intent.payment && intent.payment.id) {
+        console.log(`✅ Payment Intent APROVADO! Payment ID: ${intent.payment.id}`);
+        
+        // Limpa a intent da fila
+        try {
+          await fetch(intentUrl, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          });
+          console.log(`🧹 Intent ${paymentId} limpa da fila`);
+        } catch (e) {
+          console.log(`⚠️ Erro ao limpar intent: ${e.message}`);
+        }
+
+        return res.json({ status: "approved", paymentId: intent.payment.id });
+      }
+
+      // Estados finalizados
+      if (intent.state === "FINISHED") {
+        console.log(`✅ Intent FINISHED - aprovado`);
+        return res.json({ status: "approved" });
+      }
+
+      if (intent.state === "CANCELED" || intent.state === "ERROR") {
+        console.log(`❌ Intent ${intent.state}`);
+        return res.json({ status: "canceled" });
+      }
+
+      // Ainda pendente
+      console.log(`⏳ Intent pendente (${intent.state})`);
       return res.json({ status: "pending" });
     }
 
-    const order = await response.json();
+    // 2. Se não é Payment Intent, tenta como Order (PIX)
+    console.log(`🔄 Não é Payment Intent, tentando como Order PIX...`);
+    const orderUrl = `https://api.mercadopago.com/v1/orders/${paymentId}`;
+    const orderResponse = await fetch(orderUrl, {
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+    });
 
-    console.log(`📋 Order ${orderId} | Type: ${order.type} | Status: ${order.status}`);
+    if (orderResponse.ok) {
+      const order = await orderResponse.json();
+      console.log(`💚 Order ${paymentId} | Status: ${order.status}`);
 
-    // 2. Status possíveis: opened, closed, expired, cancelled
-    if (order.status === 'closed') {
-      // Order fechada = pagamento aprovado
-      console.log(`✅ Order ${orderId} FECHADA - Pagamento aprovado!`);
-      return res.json({ status: "approved", orderId: order.id });
-    } else if (order.status === 'expired' || order.status === 'cancelled') {
-      console.log(`❌ Order ${orderId} ${order.status.toUpperCase()}`);
-      return res.json({ status: "canceled" });
+      if (order.status === 'closed') {
+        console.log(`✅ Order PIX FECHADA - Pagamento aprovado!`);
+        return res.json({ status: "approved", orderId: order.id });
+      } else if (order.status === 'expired' || order.status === 'cancelled') {
+        console.log(`❌ Order ${order.status.toUpperCase()}`);
+        return res.json({ status: "canceled" });
+      }
+
+      console.log(`⏳ Order ainda pendente`);
+      return res.json({ status: "pending" });
     }
 
-    // 3. Ainda aberta/pendente
-    console.log(`⏳ Order ${orderId} ainda pendente`);
+    // 3. Não encontrado em nenhum lugar
+    console.log(`⚠️ Pagamento ${paymentId} não encontrado`);
     res.json({ status: "pending" });
 
   } catch (error) {
-    console.error("❌ Erro ao verificar status order:", error.message);
+    console.error("❌ Erro ao verificar status:", error.message);
     res.json({ status: "pending" });
   }
 });
