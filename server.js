@@ -1339,13 +1339,37 @@ app.post("/api/ai/suggestion", async (req, res) => {
   }
   try {
     console.log("🤖 Chamando OpenAI para sugestão...");
+    
+    // Busca TODOS os produtos disponíveis no catálogo
+    const products = await db("products").select("id", "name", "description", "price", "category", "stock");
+    const availableProducts = products.filter(p => p.stock === null || p.stock > 0);
+    
+    // Monta lista formatada dos produtos
+    const productList = availableProducts.map(p => 
+      `- ${p.name} (${p.category}) - R$ ${p.price} ${p.description ? '- ' + p.description : ''}`
+    ).join('\n');
+    
+    console.log(`📋 ${availableProducts.length} produtos disponíveis no catálogo`);
+    
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "Vendedor." },
+        { 
+          role: "system", 
+          content: `Você é um vendedor de uma pastelaria/lanchonete. Recomende APENAS produtos que estão no nosso catálogo abaixo. NUNCA invente produtos que não existem na lista.
+
+CATÁLOGO DISPONÍVEL:
+${productList}
+
+REGRAS:
+- Recomende APENAS produtos da lista acima
+- Seja breve e direto (máximo 2-3 produtos)
+- Mencione o nome EXATO do produto
+- Seja simpático e convincente` 
+        },
         { role: "user", content: req.body.prompt },
       ],
-      max_tokens: 100,
+      max_tokens: 150,
     });
     console.log("✅ Resposta OpenAI recebida!");
     res.json({ text: completion.choices[0].message.content });
