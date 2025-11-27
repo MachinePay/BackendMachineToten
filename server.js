@@ -184,6 +184,13 @@ async function initDatabase() {
   } else {
     console.log(`✅ O banco já contém ${result.count} produtos.`);
   }
+  
+  // Verifica OpenAI
+  if (openai) {
+    console.log("🤖 OpenAI configurada - IA disponível");
+  } else {
+    console.log("⚠️ OpenAI NÃO configurada - OPENAI_API_KEY não encontrada");
+  }
 }
 
 // --- Middlewares ---
@@ -490,45 +497,8 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
         });
 
         console.log(`✅ Pagamento ${id} confirmado via IPN! Valor: R$ ${payment.transaction_amount}`);
-        
-        // DESCONTA DO ESTOQUE usando external_reference (ID do pedido)
-        const externalRef = payment.external_reference;
-        if (externalRef) {
-          console.log(`📦 Processando desconto de estoque para pedido: ${externalRef}`);
-          
-          try {
-            // Busca o pedido no banco
-            const order = await db("orders").where({ id: externalRef }).first();
-            
-            if (order) {
-              const items = parseJSON(order.items);
-              console.log(`  🛒 ${items.length} item(ns) no pedido`);
-              
-              // Desconta cada produto
-              for (const item of items) {
-                const product = await db("products").where({ id: item.id }).first();
-                
-                if (product && product.stock !== null) {
-                  const newStock = product.stock - item.quantity;
-                  
-                  await db("products")
-                    .where({ id: item.id })
-                    .update({ stock: Math.max(0, newStock) });
-                  
-                  console.log(`  ✅ ${item.name}: ${product.stock} → ${Math.max(0, newStock)} (${item.quantity} vendido)`);
-                } else if (product) {
-                  console.log(`  ℹ️ ${item.name}: estoque ilimitado`);
-                }
-              }
-              
-              console.log(`🎉 Estoque atualizado com sucesso!`);
-            } else {
-              console.log(`⚠️ Pedido ${externalRef} não encontrado no banco`);
-            }
-          } catch (err) {
-            console.error(`❌ Erro ao descontar estoque: ${err.message}`);
-          }
-        }
+        console.log(`ℹ️ External reference: ${payment.external_reference || 'não informado'}`);
+        console.log(`ℹ️ Estoque já foi descontado no momento da criação do pedido (/api/orders)`);
       }
     } else {
       console.log(`⚠️ IPN ignorado - Topic: ${topic}, ID: ${id}`);
@@ -1363,8 +1333,12 @@ app.post("/api/payment/clear-queue", async (req, res) => {
 // --- Rotas de IA ---
 
 app.post("/api/ai/suggestion", async (req, res) => {
-  if (!openai) return res.json({ text: "IA indisponível" });
+  if (!openai) {
+    console.log("❌ OpenAI não inicializada - OPENAI_API_KEY está configurada?");
+    return res.json({ text: "IA indisponível" });
+  }
   try {
+    console.log("🤖 Chamando OpenAI para sugestão...");
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -1373,16 +1347,22 @@ app.post("/api/ai/suggestion", async (req, res) => {
       ],
       max_tokens: 100,
     });
+    console.log("✅ Resposta OpenAI recebida!");
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    // console.error("Erro OpenAI:", e);
+    console.error("❌ ERRO OpenAI:", e.message);
+    console.error("Detalhes:", e.response?.data || e);
     res.json({ text: "Sugestão indisponível no momento." });
   }
 });
 
 app.post("/api/ai/chat", async (req, res) => {
-  if (!openai) return res.status(503).json({ error: "IA indisponível" });
+  if (!openai) {
+    console.log("❌ OpenAI não inicializada - OPENAI_API_KEY está configurada?");
+    return res.status(503).json({ error: "IA indisponível" });
+  }
   try {
+    console.log("🤖 Chamando OpenAI para chat...");
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -1391,9 +1371,11 @@ app.post("/api/ai/chat", async (req, res) => {
       ],
       max_tokens: 150,
     });
+    console.log("✅ Resposta OpenAI recebida!");
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
-    // console.error("Erro OpenAI:", e);
+    console.error("❌ ERRO OpenAI:", e.message);
+    console.error("Detalhes:", e.response?.data || e);
     res.json({ text: "Desculpe, estou com problemas de conexão." });
   }
 });
