@@ -1479,6 +1479,15 @@ app.post("/api/ai/chat", async (req, res) => {
 
 // --- OTIMIZAÇÃO DE FILA DE COZINHA COM IA ---
 
+// Cache da otimização de cozinha
+let kitchenCache = {
+  orders: [],
+  reasoning: '',
+  aiEnabled: false,
+  lastOrderIds: '', // Hash dos IDs para detectar mudanças
+  timestamp: 0
+};
+
 app.get("/api/ai/kitchen-priority", async (req, res) => {
   if (!openai) {
     console.log("❌ OpenAI não inicializada - retornando ordem padrão");
@@ -1500,8 +1509,6 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
   }
 
   try {
-    console.log("🍳 Analisando fila da cozinha com IA...");
-
     // 1. Busca pedidos ativos (não finalizados)
     const orders = await db("orders")
       .where({ status: "active" })
@@ -1509,6 +1516,13 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
       .select("*");
 
     if (orders.length === 0) {
+      kitchenCache = {
+        orders: [],
+        reasoning: '',
+        aiEnabled: true,
+        lastOrderIds: '',
+        timestamp: Date.now()
+      };
       return res.json({ 
         orders: [], 
         aiEnabled: true,
@@ -1516,6 +1530,21 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
       });
     }
 
+    // 2. Verifica se houve mudanças (novo pedido ou pedido concluído)
+    const currentOrderIds = orders.map(o => o.id).sort().join(',');
+    
+    if (kitchenCache.lastOrderIds === currentOrderIds) {
+      console.log("♻️ Cache válido - retornando otimização anterior (sem chamar IA)");
+      return res.json({
+        orders: kitchenCache.orders,
+        aiEnabled: kitchenCache.aiEnabled,
+        reasoning: kitchenCache.reasoning,
+        cached: true,
+        cacheAge: Math.round((Date.now() - kitchenCache.timestamp) / 1000) + 's'
+      });
+    }
+
+    console.log("🍳 Mudança detectada - recalculando com IA...");
     console.log(`📋 ${orders.length} pedido(s) na fila`);
 
     // 2. Busca informações dos produtos para calcular complexidade
@@ -1619,12 +1648,22 @@ Retorne APENAS o JSON, sem texto adicional.`
 
     console.log(`✅ Ordem otimizada pela IA: ${optimizedOrders.map(o => o.id).join(', ')}`);
 
+    // Salva no cache
+    kitchenCache = {
+      orders: optimizedOrders,
+      reasoning: aiSuggestion.reasoning || "Ordem otimizada pela IA",
+      aiEnabled: true,
+      lastOrderIds: currentOrderIds,
+      timestamp: Date.now()
+    };
+
     res.json({
       orders: optimizedOrders,
       aiEnabled: true,
       reasoning: aiSuggestion.reasoning || "Ordem otimizada pela IA",
       originalOrder: orders.map(o => o.id),
-      optimizedOrder: optimizedOrders.map(o => o.id)
+      optimizedOrder: optimizedOrders.map(o => o.id),
+      cached: false
     });
 
   } catch (e) {
