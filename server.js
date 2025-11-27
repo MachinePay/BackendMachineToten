@@ -951,33 +951,117 @@ app.get("/api/payment/status-pix/:orderId", async (req, res) => {
   return res.redirect(307, `/api/payment/status/${req.params.orderId}`);
 });
 
-// Cancelar pagamento manualmente (caso necessário)
+// ==========================================
+// --- CANCELAMENTO E LIMPEZA ---
+// ==========================================
+
+// Cancelar pagamento específico (Point Intent ou PIX Payment)
 app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
   const { paymentId } = req.params;
 
-  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+  if (!MP_ACCESS_TOKEN) {
     return res.json({ success: true, message: "Mock cancelado" });
   }
 
   try {
-    console.log(`🛑 Cancelando intent: ${paymentId}`);
+    console.log(`🛑 Cancelando pagamento: ${paymentId}`);
     
-    const urlIntent = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
-    const response = await fetch(urlIntent, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+    // Tenta cancelar como Payment Intent (maquininha)
+    if (MP_DEVICE_ID) {
+      const urlIntent = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
+      const response = await fetch(urlIntent, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+
+      if (response.ok || response.status === 404) {
+        console.log(`✅ Intent ${paymentId} cancelada`);
+        return res.json({ success: true, message: "Pagamento cancelado" });
+      }
+    }
+    
+    // Se não for intent, tenta cancelar payment PIX
+    const urlPayment = `https://api.mercadopago.com/v1/payments/${paymentId}`;
+    const response = await fetch(urlPayment, {
+      method: "PUT",
+      headers: { 
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ status: "cancelled" })
     });
 
     if (response.ok || response.status === 404) {
-      console.log(`✅ Intent ${paymentId} cancelada com sucesso`);
-      return res.json({ success: true, message: "Pagamento cancelado" });
-    } else {
-      const error = await response.json();
-      console.error(`❌ Erro ao cancelar: ${error.message}`);
-      return res.status(400).json({ success: false, error: error.message });
+      console.log(`✅ Payment PIX ${paymentId} cancelado`);
+      return res.json({ success: true, message: "PIX cancelado" });
     }
+
+    const error = await response.json();
+    console.error(`❌ Erro ao cancelar: ${error.message}`);
+    return res.status(400).json({ success: false, error: error.message });
+
   } catch (error) {
     console.error("❌ Erro ao cancelar pagamento:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Limpar TODA a fila da maquininha (útil para logout/sair)
+app.post("/api/payment/clear-all", async (req, res) => {
+  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+    return res.json({ success: true, cleared: 0 });
+  }
+
+  try {
+    console.log(`🧹 [CLEAR ALL] Limpando TODA a fila da maquininha...`);
+    
+    const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+    const listResp = await fetch(listUrl, {
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+    });
+    
+    if (!listResp.ok) {
+      return res.json({ success: false, error: "Erro ao listar intents" });
+    }
+    
+    const listData = await listResp.json();
+    const events = listData.events || [];
+    
+    console.log(`🔍 Encontradas ${events.length} intent(s) na fila`);
+    
+    let cleared = 0;
+    
+    for (const ev of events) {
+      const iId = ev.payment_intent_id || ev.id;
+      
+      try {
+        const delResp = await fetch(`${listUrl}/${iId}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        });
+        
+        if (delResp.ok || delResp.status === 404) {
+          console.log(`  ✅ Intent ${iId} removida`);
+          cleared++;
+        }
+      } catch (e) {
+        console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
+      }
+      
+      // Pequeno delay entre remoções
+      await new Promise(r => setTimeout(r, 100));
+    }
+    
+    console.log(`✅ [CLEAR ALL] ${cleared} intent(s) removida(s) - Maquininha limpa!`);
+    
+    res.json({ 
+      success: true, 
+      cleared: cleared,
+      message: `${cleared} pagamento(s) removido(s) da fila` 
+    });
+    
+  } catch (error) {
+    console.error("❌ Erro ao limpar fila:", error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
