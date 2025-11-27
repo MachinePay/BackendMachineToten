@@ -1477,6 +1477,178 @@ app.post("/api/ai/chat", async (req, res) => {
   }
 });
 
+// --- OTIMIZAÇÃO DE FILA DE COZINHA COM IA ---
+
+app.get("/api/ai/kitchen-priority", async (req, res) => {
+  if (!openai) {
+    console.log("❌ OpenAI não inicializada - retornando ordem padrão");
+    // Se IA indisponível, retorna ordem cronológica normal
+    try {
+      const orders = await db("orders")
+        .where({ status: "active" })
+        .orderBy("timestamp", "asc")
+        .select("*");
+      
+      return res.json({ 
+        orders: orders.map(o => ({ ...o, items: parseJSON(o.items) })),
+        aiEnabled: false,
+        message: "IA indisponível - ordem cronológica"
+      });
+    } catch (e) {
+      return res.status(500).json({ error: "Erro ao buscar pedidos" });
+    }
+  }
+
+  try {
+    console.log("🍳 Analisando fila da cozinha com IA...");
+
+    // 1. Busca pedidos ativos (não finalizados)
+    const orders = await db("orders")
+      .where({ status: "active" })
+      .orderBy("timestamp", "asc")
+      .select("*");
+
+    if (orders.length === 0) {
+      return res.json({ 
+        orders: [], 
+        aiEnabled: true,
+        message: "Nenhum pedido pendente"
+      });
+    }
+
+    console.log(`📋 ${orders.length} pedido(s) na fila`);
+
+    // 2. Busca informações dos produtos para calcular complexidade
+    const products = await db("products").select("*");
+    const productMap = {};
+    products.forEach(p => {
+      productMap[p.id] = p;
+    });
+
+    // 3. Prepara dados dos pedidos para IA analisar
+    const orderDetails = orders.map(order => {
+      const items = parseJSON(order.items);
+      const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
+      
+      // Calcula "peso" do pedido (quantidade x complexidade estimada)
+      const categories = items.map(item => productMap[item.id]?.category || "outro");
+      const hasHotFood = categories.some(c => ["Pastel", "Hambúrguer", "Pizza"].includes(c));
+      const hasColdFood = categories.some(c => ["Bebida", "Suco", "Sobremesa"].includes(c));
+      
+      return {
+        id: order.id,
+        timestamp: order.timestamp,
+        customerName: order.userName,
+        itemCount: itemCount,
+        items: items.map(i => i.name).join(", "),
+        hasHotFood: hasHotFood,
+        hasColdFood: hasColdFood,
+        minutesWaiting: Math.round((Date.now() - new Date(order.timestamp).getTime()) / 60000)
+      };
+    });
+
+    // 4. Monta prompt para IA otimizar ordem
+    const ordersText = orderDetails.map((o, idx) => 
+      `${idx + 1}. Pedido ${o.id} (${o.customerName})
+   - Aguardando: ${o.minutesWaiting} min
+   - Itens: ${o.itemCount} (${o.items})
+   - Tipo: ${o.hasHotFood ? '🔥 Quente' : ''} ${o.hasColdFood ? '❄️ Frio' : ''}`
+    ).join('\n\n');
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { 
+          role: "system", 
+          content: `Você é um assistente de cozinha especializado em otimizar a ordem de preparo de pedidos.
+
+REGRAS DE PRIORIZAÇÃO:
+1. Pedidos pequenos e rápidos (1-2 itens frios) devem ser priorizados se houverem pedidos grandes na frente
+2. Pedidos com muito tempo de espera (>5 min) não devem ser muito atrasados
+3. Agrupe pedidos que usam os mesmos equipamentos (ex: fritadeira)
+4. Bebidas/sucos podem ser feitos rapidamente entre pedidos grandes
+5. Considere eficiência: fazer 3 pedidos pequenos pode ser mais rápido que 1 grande
+
+RESPONDA NO FORMATO JSON:
+{
+  "priorityOrder": ["order_123", "order_456", ...],
+  "reasoning": "Explicação breve da estratégia"
+}
+
+Retorne APENAS o JSON, sem texto adicional.`
+        },
+        { 
+          role: "user", 
+          content: `Otimize a ordem de preparo destes pedidos:\n\n${ordersText}` 
+        },
+      ],
+      max_tokens: 500,
+      temperature: 0.7,
+    });
+
+    const aiResponse = completion.choices[0].message.content.trim();
+    console.log("🤖 Resposta IA:", aiResponse);
+
+    // 5. Parse da resposta JSON da IA
+    let aiSuggestion;
+    try {
+      // Remove markdown code blocks se existir
+      const cleanJson = aiResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      aiSuggestion = JSON.parse(cleanJson);
+    } catch (parseError) {
+      console.error("❌ Erro ao parsear resposta da IA:", parseError);
+      // Fallback: ordem cronológica
+      return res.json({
+        orders: orders.map(o => ({ ...o, items: parseJSON(o.items) })),
+        aiEnabled: true,
+        message: "IA falhou - usando ordem cronológica",
+        reasoning: "Erro ao processar sugestão da IA"
+      });
+    }
+
+    // 6. Reorganiza pedidos conforme IA sugeriu
+    const orderMap = {};
+    orders.forEach(o => {
+      orderMap[o.id] = o;
+    });
+
+    const optimizedOrders = aiSuggestion.priorityOrder
+      .map(orderId => orderMap[orderId])
+      .filter(o => o !== undefined) // Remove IDs inválidos
+      .map(o => ({ ...o, items: parseJSON(o.items) }));
+
+    console.log(`✅ Ordem otimizada pela IA: ${optimizedOrders.map(o => o.id).join(', ')}`);
+
+    res.json({
+      orders: optimizedOrders,
+      aiEnabled: true,
+      reasoning: aiSuggestion.reasoning || "Ordem otimizada pela IA",
+      originalOrder: orders.map(o => o.id),
+      optimizedOrder: optimizedOrders.map(o => o.id)
+    });
+
+  } catch (e) {
+    console.error("❌ ERRO na otimização de cozinha:", e.message);
+    
+    // Fallback: retorna ordem cronológica
+    try {
+      const orders = await db("orders")
+        .where({ status: "active" })
+        .orderBy("timestamp", "asc")
+        .select("*");
+      
+      res.json({ 
+        orders: orders.map(o => ({ ...o, items: parseJSON(o.items) })),
+        aiEnabled: false,
+        message: "Erro na IA - usando ordem cronológica",
+        error: e.message
+      });
+    } catch (dbError) {
+      res.status(500).json({ error: "Erro ao buscar pedidos" });
+    }
+  }
+});
+
 // --- ANÁLISE INTELIGENTE DE ESTOQUE E VENDAS (Admin) ---
 
 app.get("/api/ai/inventory-analysis", async (req, res) => {
