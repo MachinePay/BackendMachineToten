@@ -964,78 +964,82 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
   }
 
   try {
-    console.log(`🛑 CANCELAMENTO IMEDIATO: ${paymentId}`);
-    let cancelled = false;
+    console.log(`🛑 CANCELAMENTO FORÇADO: ${paymentId}`);
     
-    // 1. CANCELA NA MAQUININHA COM DEVICE_ID (endpoint correto)
     if (MP_DEVICE_ID) {
-      // URL CORRETA: /devices/{device_id}/payment-intents/{payment_intent_id}
-      const urlIntentWithDevice = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents/${paymentId}`;
+      const baseUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+      const urlIntent = `${baseUrl}/${paymentId}`;
       
-      console.log(`  🎯 Cancelando na maquininha (device ${MP_DEVICE_ID})...`);
+      // ESTRATÉGIA: Limpar TODA a fila primeiro (forçado)
+      console.log(`🧹 LIMPANDO FILA COMPLETA (forçado)...`);
       
       try {
-        const response = await fetch(urlIntentWithDevice, {
-          method: "DELETE",
+        // 1. Lista todos os intents
+        const listResp = await fetch(baseUrl, {
           headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
         });
-
-        const responseText = await response.text();
-        console.log(`  📡 Response: ${response.status} - ${responseText}`);
-
-        if (response.ok || response.status === 204) {
-          console.log(`  ✅ CANCELADO NA MAQUININHA!`);
-          cancelled = true;
-        } else if (response.status === 404) {
-          console.log(`  ⚠️ Intent não encontrada (já foi processada ou cancelada)`);
-          cancelled = true; // Considera sucesso se não existir mais
-        } else {
-          console.log(`  ❌ Erro ${response.status}: ${responseText}`);
-        }
-      } catch (e) {
-        console.log(`  ❌ Erro na requisição: ${e.message}`);
-      }
-      
-      // 2. Se cancelou, limpa TODA a fila para garantir que maquininha volte ao início
-      if (cancelled) {
-        console.log(`🧹 Limpando fila completa...`);
-        try {
-          const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
-          const listResp = await fetch(listUrl, {
-            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-          });
+        
+        if (listResp.ok) {
+          const listData = await listResp.json();
+          const events = listData.events || [];
           
-          if (listResp.ok) {
-            const listData = await listResp.json();
-            const events = listData.events || [];
+          console.log(`  📋 ${events.length} intents na fila para remover`);
+          
+          // 2. Remove TODOS, incluindo o que está em OPEN
+          for (const ev of events) {
+            const iId = ev.payment_intent_id || ev.id;
             
-            console.log(`  📋 ${events.length} intents na fila`);
-            
-            for (const ev of events) {
-              const iId = ev.payment_intent_id || ev.id;
-              try {
-                await fetch(`${listUrl}/${iId}`, {
+            try {
+              console.log(`  🗑️ Removendo ${iId}...`);
+              
+              const delResp = await fetch(`${baseUrl}/${iId}`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+              });
+              
+              if (delResp.ok || delResp.status === 204 || delResp.status === 404) {
+                console.log(`  ✅ ${iId} removido`);
+              } else if (delResp.status === 409) {
+                // 409 = está processando, aguarda 2s e tenta de novo
+                console.log(`  ⏳ ${iId} está processando, aguardando...`);
+                await new Promise(r => setTimeout(r, 2000));
+                
+                const retryResp = await fetch(`${baseUrl}/${iId}`, {
                   method: "DELETE",
                   headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
                 });
-                console.log(`  🗑️ Intent ${iId} removida`);
-              } catch (e) {
-                console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
+                
+                if (retryResp.ok || retryResp.status === 204 || retryResp.status === 404) {
+                  console.log(`  ✅ ${iId} removido na 2ª tentativa`);
+                } else {
+                  const errText = await retryResp.text();
+                  console.log(`  ⚠️ ${iId} ainda não removido: ${errText}`);
+                }
+              } else {
+                const errText = await delResp.text();
+                console.log(`  ⚠️ Erro ao remover ${iId}: ${errText}`);
               }
-              await new Promise(r => setTimeout(r, 150));
+              
+            } catch (e) {
+              console.log(`  ❌ Exceção ao remover ${iId}: ${e.message}`);
             }
             
-            console.log(`✅ FILA LIMPA - MAQUININHA PRONTA!`);
+            // Delay entre remoções
+            await new Promise(r => setTimeout(r, 300));
           }
-        } catch (e) {
-          console.log(`⚠️ Erro ao limpar fila: ${e.message}`);
+          
+          console.log(`✅ PROCESSO DE LIMPEZA CONCLUÍDO!`);
+          console.log(`🔄 Maquininha deve voltar à tela inicial em alguns segundos...`);
+          
+          return res.json({ 
+            success: true, 
+            message: "Fila limpa - aguarde alguns segundos",
+            cancelled: true,
+            cleared: events.length
+          });
         }
-        
-        return res.json({ 
-          success: true, 
-          message: "Cancelado na maquininha",
-          cancelled: true 
-        });
+      } catch (e) {
+        console.log(`❌ Erro ao limpar fila: ${e.message}`);
       }
     }
     
