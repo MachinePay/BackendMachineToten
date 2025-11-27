@@ -477,7 +477,7 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
 
       console.log(`💳 Pagamento ${id} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`);
 
-      // Se aprovado, adiciona ao cache
+      // Se aprovado, adiciona ao cache E DESCONTA DO ESTOQUE
       if (payment.status === "approved" || payment.status === "authorized") {
         const amountInCents = Math.round(payment.transaction_amount * 100);
         const cacheKey = `amount_${amountInCents}`;
@@ -489,7 +489,46 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
           timestamp: Date.now(),
         });
 
-        console.log(`✅ Pagamento ${id} confirmado via IPN e adicionado ao cache! Valor: R$ ${payment.transaction_amount}`);
+        console.log(`✅ Pagamento ${id} confirmado via IPN! Valor: R$ ${payment.transaction_amount}`);
+        
+        // DESCONTA DO ESTOQUE usando external_reference (ID do pedido)
+        const externalRef = payment.external_reference;
+        if (externalRef) {
+          console.log(`📦 Processando desconto de estoque para pedido: ${externalRef}`);
+          
+          try {
+            // Busca o pedido no banco
+            const order = await db("orders").where({ id: externalRef }).first();
+            
+            if (order) {
+              const items = parseJSON(order.items);
+              console.log(`  🛒 ${items.length} item(ns) no pedido`);
+              
+              // Desconta cada produto
+              for (const item of items) {
+                const product = await db("products").where({ id: item.id }).first();
+                
+                if (product && product.stock !== null) {
+                  const newStock = product.stock - item.quantity;
+                  
+                  await db("products")
+                    .where({ id: item.id })
+                    .update({ stock: Math.max(0, newStock) });
+                  
+                  console.log(`  ✅ ${item.name}: ${product.stock} → ${Math.max(0, newStock)} (${item.quantity} vendido)`);
+                } else if (product) {
+                  console.log(`  ℹ️ ${item.name}: estoque ilimitado`);
+                }
+              }
+              
+              console.log(`🎉 Estoque atualizado com sucesso!`);
+            } else {
+              console.log(`⚠️ Pedido ${externalRef} não encontrado no banco`);
+            }
+          } catch (err) {
+            console.error(`❌ Erro ao descontar estoque: ${err.message}`);
+          }
+        }
       }
     } else {
       console.log(`⚠️ IPN ignorado - Topic: ${topic}, ID: ${id}`);
@@ -541,7 +580,7 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
 
       console.log(`💳 Pagamento ${paymentId} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`);
 
-      // Se aprovado, adiciona ao cache
+      // Se aprovado, adiciona ao cache E DESCONTA DO ESTOQUE
       if (payment.status === "approved" || payment.status === "authorized") {
         const amountInCents = Math.round(payment.transaction_amount * 100);
         const cacheKey = `amount_${amountInCents}`;
@@ -553,7 +592,46 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
           timestamp: Date.now(),
         });
 
-        console.log(`✅ Pagamento ${paymentId} confirmado e adicionado ao cache! Valor: R$ ${payment.transaction_amount}`);
+        console.log(`✅ Pagamento ${paymentId} confirmado via Webhook! Valor: R$ ${payment.transaction_amount}`);
+        
+        // DESCONTA DO ESTOQUE usando external_reference (ID do pedido)
+        const externalRef = payment.external_reference;
+        if (externalRef) {
+          console.log(`📦 Processando desconto de estoque para pedido: ${externalRef}`);
+          
+          try {
+            // Busca o pedido no banco
+            const order = await db("orders").where({ id: externalRef }).first();
+            
+            if (order) {
+              const items = parseJSON(order.items);
+              console.log(`  🛒 ${items.length} item(ns) no pedido`);
+              
+              // Desconta cada produto
+              for (const item of items) {
+                const product = await db("products").where({ id: item.id }).first();
+                
+                if (product && product.stock !== null) {
+                  const newStock = product.stock - item.quantity;
+                  
+                  await db("products")
+                    .where({ id: item.id })
+                    .update({ stock: Math.max(0, newStock) });
+                  
+                  console.log(`  ✅ ${item.name}: ${product.stock} → ${Math.max(0, newStock)} (${item.quantity} vendido)`);
+                } else if (product) {
+                  console.log(`  ℹ️ ${item.name}: estoque ilimitado`);
+                }
+              }
+              
+              console.log(`🎉 Estoque atualizado com sucesso!`);
+            } else {
+              console.log(`⚠️ Pedido ${externalRef} não encontrado no banco`);
+            }
+          } catch (err) {
+            console.error(`❌ Erro ao descontar estoque: ${err.message}`);
+          }
+        }
       }
     }
   } catch (error) {
