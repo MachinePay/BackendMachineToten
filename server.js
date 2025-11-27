@@ -964,40 +964,41 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
   }
 
   try {
-    console.log(`🛑 Cancelando pagamento: ${paymentId}`);
+    console.log(`🛑 CANCELAMENTO IMEDIATO: ${paymentId}`);
     let cancelled = false;
     
-    // 1. Tenta cancelar como Payment Intent (maquininha) - MÚLTIPLAS TENTATIVAS
+    // 1. CANCELA NA MAQUININHA COM DEVICE_ID (endpoint correto)
     if (MP_DEVICE_ID) {
-      const urlIntent = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
+      // URL CORRETA: /devices/{device_id}/payment-intents/{payment_intent_id}
+      const urlIntentWithDevice = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents/${paymentId}`;
       
-      // Tenta 3 vezes com delay
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          console.log(`  🔄 Tentativa ${attempt} de cancelar intent ${paymentId}...`);
-          
-          const response = await fetch(urlIntent, {
-            method: "DELETE",
-            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-          });
+      console.log(`  🎯 Cancelando na maquininha (device ${MP_DEVICE_ID})...`);
+      
+      try {
+        const response = await fetch(urlIntentWithDevice, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        });
 
-          if (response.ok || response.status === 404) {
-            console.log(`  ✅ Intent ${paymentId} cancelada na tentativa ${attempt}`);
-            cancelled = true;
-            break;
-          } else {
-            console.log(`  ⚠️ Tentativa ${attempt}: Status ${response.status}`);
-          }
-        } catch (e) {
-          console.log(`  ❌ Tentativa ${attempt} falhou: ${e.message}`);
+        const responseText = await response.text();
+        console.log(`  📡 Response: ${response.status} - ${responseText}`);
+
+        if (response.ok || response.status === 204) {
+          console.log(`  ✅ CANCELADO NA MAQUININHA!`);
+          cancelled = true;
+        } else if (response.status === 404) {
+          console.log(`  ⚠️ Intent não encontrada (já foi processada ou cancelada)`);
+          cancelled = true; // Considera sucesso se não existir mais
+        } else {
+          console.log(`  ❌ Erro ${response.status}: ${responseText}`);
         }
-        
-        if (attempt < 3) await new Promise(r => setTimeout(r, 500));
+      } catch (e) {
+        console.log(`  ❌ Erro na requisição: ${e.message}`);
       }
       
-      // 2. LIMPA TODA A FILA (garante que maquininha libere)
+      // 2. Se cancelou, limpa TODA a fila para garantir que maquininha volte ao início
       if (cancelled) {
-        console.log(`🧹 Limpando fila completa da maquininha...`);
+        console.log(`🧹 Limpando fila completa...`);
         try {
           const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
           const listResp = await fetch(listUrl, {
@@ -1008,6 +1009,8 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
             const listData = await listResp.json();
             const events = listData.events || [];
             
+            console.log(`  📋 ${events.length} intents na fila`);
+            
             for (const ev of events) {
               const iId = ev.payment_intent_id || ev.id;
               try {
@@ -1015,18 +1018,24 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
                   method: "DELETE",
                   headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
                 });
-                console.log(`  🗑️ Intent ${iId} removida da fila`);
-              } catch (e) {}
-              await new Promise(r => setTimeout(r, 100));
+                console.log(`  🗑️ Intent ${iId} removida`);
+              } catch (e) {
+                console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
+              }
+              await new Promise(r => setTimeout(r, 150));
             }
             
-            console.log(`✅ Fila limpa - maquininha liberada!`);
+            console.log(`✅ FILA LIMPA - MAQUININHA PRONTA!`);
           }
         } catch (e) {
           console.log(`⚠️ Erro ao limpar fila: ${e.message}`);
         }
         
-        return res.json({ success: true, message: "Pagamento cancelado e fila limpa" });
+        return res.json({ 
+          success: true, 
+          message: "Cancelado na maquininha",
+          cancelled: true 
+        });
       }
     }
     
