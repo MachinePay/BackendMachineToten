@@ -965,22 +965,73 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
 
   try {
     console.log(`🛑 Cancelando pagamento: ${paymentId}`);
+    let cancelled = false;
     
-    // Tenta cancelar como Payment Intent (maquininha)
+    // 1. Tenta cancelar como Payment Intent (maquininha) - MÚLTIPLAS TENTATIVAS
     if (MP_DEVICE_ID) {
       const urlIntent = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
-      const response = await fetch(urlIntent, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-      });
+      
+      // Tenta 3 vezes com delay
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          console.log(`  🔄 Tentativa ${attempt} de cancelar intent ${paymentId}...`);
+          
+          const response = await fetch(urlIntent, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          });
 
-      if (response.ok || response.status === 404) {
-        console.log(`✅ Intent ${paymentId} cancelada`);
-        return res.json({ success: true, message: "Pagamento cancelado" });
+          if (response.ok || response.status === 404) {
+            console.log(`  ✅ Intent ${paymentId} cancelada na tentativa ${attempt}`);
+            cancelled = true;
+            break;
+          } else {
+            console.log(`  ⚠️ Tentativa ${attempt}: Status ${response.status}`);
+          }
+        } catch (e) {
+          console.log(`  ❌ Tentativa ${attempt} falhou: ${e.message}`);
+        }
+        
+        if (attempt < 3) await new Promise(r => setTimeout(r, 500));
+      }
+      
+      // 2. LIMPA TODA A FILA (garante que maquininha libere)
+      if (cancelled) {
+        console.log(`🧹 Limpando fila completa da maquininha...`);
+        try {
+          const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+          const listResp = await fetch(listUrl, {
+            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          });
+          
+          if (listResp.ok) {
+            const listData = await listResp.json();
+            const events = listData.events || [];
+            
+            for (const ev of events) {
+              const iId = ev.payment_intent_id || ev.id;
+              try {
+                await fetch(`${listUrl}/${iId}`, {
+                  method: "DELETE",
+                  headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+                });
+                console.log(`  🗑️ Intent ${iId} removida da fila`);
+              } catch (e) {}
+              await new Promise(r => setTimeout(r, 100));
+            }
+            
+            console.log(`✅ Fila limpa - maquininha liberada!`);
+          }
+        } catch (e) {
+          console.log(`⚠️ Erro ao limpar fila: ${e.message}`);
+        }
+        
+        return res.json({ success: true, message: "Pagamento cancelado e fila limpa" });
       }
     }
     
-    // Se não for intent, tenta cancelar payment PIX
+    // 3. Se não conseguiu cancelar intent, tenta como payment PIX
+    console.log(`🔄 Tentando cancelar como Payment PIX...`);
     const urlPayment = `https://api.mercadopago.com/v1/payments/${paymentId}`;
     const response = await fetch(urlPayment, {
       method: "PUT",
@@ -996,9 +1047,9 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
       return res.json({ success: true, message: "PIX cancelado" });
     }
 
-    const error = await response.json();
-    console.error(`❌ Erro ao cancelar: ${error.message}`);
-    return res.status(400).json({ success: false, error: error.message });
+    // Se chegou aqui, não conseguiu cancelar
+    console.log(`⚠️ Não foi possível cancelar ${paymentId}`);
+    return res.json({ success: false, message: "Não foi possível cancelar - pode já estar finalizado" });
 
   } catch (error) {
     console.error("❌ Erro ao cancelar pagamento:", error.message);
