@@ -630,6 +630,97 @@ app.post("/api/payment/create-pix", async (req, res) => {
   }
 });
 
+// ==========================================
+// --- ROTAS EXCLUSIVAS PIX (QR Code na Tela) ---
+// ==========================================
+
+app.post("/api/pix/create", async (req, res) => {
+  const { amount, description, email, payerName, orderId } = req.body;
+
+  if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token MP" });
+
+  try {
+    console.log(`💠 Gerando PIX QR Code de R$ ${amount}...`);
+
+    const idempotencyKey = `pix_${orderId || Date.now()}_${Date.now()}`;
+
+    const response = await fetch("https://api.mercadopago.com/v1/payments", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+        "X-Idempotency-Key": idempotencyKey
+      },
+      body: JSON.stringify({
+        transaction_amount: parseFloat(amount),
+        description: description || "Pedido Kiosk",
+        payment_method_id: "pix",
+        payer: {
+          email: email || "cliente@kiosk.com",
+          first_name: payerName || "Cliente"
+        },
+        external_reference: orderId,
+        notification_url: "https://backendkioskpro.onrender.com/api/notifications/mercadopago"
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("❌ Erro ao gerar PIX:", data);
+      throw new Error(data.message || "Erro ao gerar PIX");
+    }
+
+    const qrCodeBase64 = data.point_of_interaction?.transaction_data?.qr_code_base64;
+    const qrCodeCopyPaste = data.point_of_interaction?.transaction_data?.qr_code;
+    const paymentId = data.id;
+
+    console.log(`✅ PIX gerado! Payment ID: ${paymentId}`);
+
+    res.json({ 
+      paymentId, 
+      qrCodeBase64, 
+      qrCodeCopyPaste, 
+      status: "pending",
+      type: "pix"
+    });
+
+  } catch (error) {
+    console.error("❌ Erro ao criar PIX:", error);
+    res.status(500).json({ error: error.message || "Falha ao gerar PIX" });
+  }
+});
+
+app.get("/api/pix/status/:id", async (req, res) => {
+  const { id } = req.params;
+  
+  if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token" });
+
+  try {
+    console.log(`💠 Verificando status PIX: ${id}`);
+    
+    const response = await fetch(`https://api.mercadopago.com/v1/payments/${id}`, {
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` }
+    });
+    
+    const data = await response.json();
+
+    console.log(`💠 Status PIX (${id}): ${data.status}`);
+
+    if (data.status === "approved") {
+      return res.json({ status: "approved", paymentId: id });
+    }
+    
+    res.json({ status: data.status || "pending" });
+
+  } catch (error) {
+    console.error("❌ Erro ao verificar PIX:", error);
+    res.json({ status: "pending" });
+  }
+});
+
+// ==========================================
+
 // CRIAR PAGAMENTO NA MAQUININHA (Point Integration API - volta ao original)
 app.post("/api/payment/create", async (req, res) => {
   const { amount, description, orderId, paymentMethod } = req.body;
