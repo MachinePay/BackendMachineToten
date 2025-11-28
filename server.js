@@ -525,6 +525,23 @@ app.get("/api/user-orders", async (req, res) => {
   }
 });
 
+// Verificar se pedido existe (útil para debug)
+app.get("/api/orders/:id", async (req, res) => {
+  try {
+    const order = await db("orders").where({ id: req.params.id }).first();
+    if (!order) {
+      return res.status(404).json({ error: "Pedido não encontrado" });
+    }
+    res.json({
+      ...order,
+      items: parseJSON(order.items),
+      total: parseFloat(order.total)
+    });
+  } catch (e) {
+    res.status(500).json({ error: "Erro ao buscar pedido" });
+  }
+});
+
 // --- IPN MERCADO PAGO (Para pagamentos físicos Point) ---
 
 app.post("/api/notifications/mercadopago", async (req, res) => {
@@ -1001,26 +1018,53 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
 
       // Verifica se tem payment.id (pagamento aprovado)
       if (intent.payment && intent.payment.id) {
-        console.log(`✅ Payment Intent APROVADO! Payment ID: ${intent.payment.id}`);
+        const realPaymentId = intent.payment.id;
+        console.log(`✅ Payment Intent APROVADO! Payment ID: ${realPaymentId}`);
         
-        // Limpa a intent da fila
+        // Busca detalhes do pagamento real para confirmar status
         try {
-          await fetch(intentUrl, {
-            method: "DELETE",
+          const paymentDetailsUrl = `https://api.mercadopago.com/v1/payments/${realPaymentId}`;
+          const paymentDetailsResp = await fetch(paymentDetailsUrl, {
             headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
           });
-          console.log(`🧹 Intent ${paymentId} limpa da fila`);
+          
+          if (paymentDetailsResp.ok) {
+            const paymentDetails = await paymentDetailsResp.json();
+            console.log(`💳 Pagamento real status: ${paymentDetails.status}`);
+            
+            if (paymentDetails.status === 'approved' || paymentDetails.status === 'authorized') {
+              console.log(`✅ PAGAMENTO CONFIRMADO COMO APROVADO!`);
+              
+              // Limpa a intent da fila
+              try {
+                await fetch(intentUrl, {
+                  method: "DELETE",
+                  headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+                });
+                console.log(`🧹 Intent ${paymentId} limpa da fila`);
+              } catch (e) {
+                console.log(`⚠️ Erro ao limpar intent: ${e.message}`);
+              }
+              
+              return res.json({ 
+                status: "approved", 
+                paymentId: realPaymentId,
+                paymentStatus: paymentDetails.status
+              });
+            }
+          }
         } catch (e) {
-          console.log(`⚠️ Erro ao limpar intent: ${e.message}`);
+          console.log(`⚠️ Erro ao buscar detalhes do pagamento: ${e.message}`);
         }
-
-        return res.json({ status: "approved", paymentId: intent.payment.id });
+        
+        // Fallback: se não conseguiu buscar detalhes, retorna como aprovado mesmo assim
+        return res.json({ status: "approved", paymentId: realPaymentId });
       }
 
       // Estados finalizados
       if (intent.state === "FINISHED") {
         console.log(`✅ Intent FINISHED - aprovado`);
-        return res.json({ status: "approved" });
+        return res.json({ status: "approved", paymentId: paymentId });
       }
 
       if (intent.state === "CANCELED" || intent.state === "ERROR") {
