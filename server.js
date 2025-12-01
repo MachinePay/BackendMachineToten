@@ -112,6 +112,56 @@ setInterval(async () => {
   }
 }, 120000); // A cada 2 minutos
 
+// 🧹 CRON: Libera estoque de pedidos pendentes expirados (>30 min)
+setInterval(async () => {
+  try {
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    
+    // Busca pedidos pendentes antigos
+    const expiredOrders = await db("orders")
+      .where({ paymentStatus: "pending" })
+      .where("timestamp", "<", thirtyMinutesAgo)
+      .select("*");
+    
+    if (expiredOrders.length > 0) {
+      console.log(`🧹 [CRON] ${expiredOrders.length} pedido(s) expirado(s) encontrado(s)`);
+      
+      for (const order of expiredOrders) {
+        const items = parseJSON(order.items);
+        
+        // Libera estoque reservado
+        for (const item of items) {
+          const product = await db("products").where({ id: item.id }).first();
+          
+          if (product && product.stock !== null && product.stock_reserved > 0) {
+            const newReserved = Math.max(0, product.stock_reserved - item.quantity);
+            
+            await db("products")
+              .where({ id: item.id })
+              .update({ stock_reserved: newReserved });
+            
+            console.log(`  ↩️ ${item.name}: liberando ${item.quantity} unidade(s) (reserva: ${product.stock_reserved} → ${newReserved})`);
+          }
+        }
+        
+        // Marca pedido como expirado
+        await db("orders")
+          .where({ id: order.id })
+          .update({ 
+            status: "expired",
+            paymentStatus: "expired"
+          });
+        
+        console.log(`  ❌ Pedido ${order.id} marcado como expirado`);
+      }
+      
+      console.log(`✅ [CRON] Estoque liberado com sucesso`);
+    }
+  } catch (error) {
+    console.error("❌ [CRON] Erro ao liberar estoque:", error.message);
+  }
+}, 600000); // A cada 10 minutos
+
 // --- Inicialização do Banco (SEED) ---
 async function initDatabase() {
   console.log("⏳ Verificando tabelas...");
@@ -127,7 +177,17 @@ async function initDatabase() {
       table.string("videoUrl");
       table.boolean("popular").defaultTo(false);
       table.integer("stock"); // NULL = estoque ilimitado, 0 = esgotado
+      table.integer("stock_reserved").defaultTo(0); // Estoque reservado temporariamente
     });
+  } else {
+    // Adiciona coluna stock_reserved se não existir
+    const hasReservedColumn = await db.schema.hasColumn("products", "stock_reserved");
+    if (!hasReservedColumn) {
+      await db.schema.table("products", (table) => {
+        table.integer("stock_reserved").defaultTo(0);
+      });
+      console.log("✅ Coluna stock_reserved adicionada");
+    }
   } else {
     // Migração: Adicionar coluna stock se não existir
     const hasStock = await db.schema.hasColumn("products", "stock");
@@ -246,12 +306,20 @@ app.get("/api/webhooks/mercadopago", (req, res) => {
 app.get("/api/menu", async (req, res) => {
   try {
     const products = await db("products").select("*").orderBy("id");
-    res.json(products.map((p) => ({ 
-      ...p, 
-      price: parseFloat(p.price),
-      stock: p.stock,
-      isAvailable: p.stock === null || p.stock > 0 // null = ilimitado, > 0 = disponível
-    })));
+    res.json(products.map((p) => {
+      const stockAvailable = p.stock === null 
+        ? null // ilimitado
+        : Math.max(0, p.stock - (p.stock_reserved || 0)); // disponível = total - reservado
+      
+      return {
+        ...p, 
+        price: parseFloat(p.price),
+        stock: p.stock,
+        stock_reserved: p.stock_reserved || 0,
+        stock_available: stockAvailable,
+        isAvailable: stockAvailable === null || stockAvailable > 0
+      };
+    }));
   } catch (e) {
     res.status(500).json({ error: "Erro ao buscar menu" });
   }
@@ -417,8 +485,8 @@ app.post("/api/orders", async (req, res) => {
       });
     }
 
-    // ✅ DESCONTA ESTOQUE AQUI (ANTES de inserir o pedido)
-    console.log(`📉 Descontando estoque de ${items.length} produto(s)...`);
+    // ✅ RESERVA ESTOQUE AQUI (ANTES de inserir o pedido)
+    console.log(`🔒 Reservando estoque de ${items.length} produto(s)...`);
     
     for (const item of items) {
       const product = await db("products").where({ id: item.id }).first();
@@ -428,28 +496,31 @@ app.post("/api/orders", async (req, res) => {
         continue;
       }
       
-      // Se stock é null = ilimitado, não precisa descontar
+      // Se stock é null = ilimitado, não precisa reservar
       if (product.stock === null) {
         console.log(`  ℹ️ ${item.name}: estoque ilimitado`);
         continue;
       }
       
-      // Verifica se tem estoque suficiente
-      if (product.stock < item.quantity) {
-        throw new Error(`Estoque insuficiente para ${item.name}. Disponível: ${product.stock}, Solicitado: ${item.quantity}`);
+      // Calcula estoque disponível (total - reservado)
+      const stockAvailable = product.stock - (product.stock_reserved || 0);
+      
+      // Verifica se tem estoque disponível suficiente
+      if (stockAvailable < item.quantity) {
+        throw new Error(`Estoque insuficiente para ${item.name}. Disponível: ${stockAvailable}, Solicitado: ${item.quantity}`);
       }
       
-      // Desconta o estoque
-      const newStock = product.stock - item.quantity;
+      // Aumenta a RESERVA (não deduz ainda)
+      const newReserved = (product.stock_reserved || 0) + item.quantity;
       
       await db("products")
         .where({ id: item.id })
-        .update({ stock: Math.max(0, newStock) });
+        .update({ stock_reserved: newReserved });
       
-      console.log(`  ✅ ${item.name}: ${product.stock} → ${Math.max(0, newStock)} (-${item.quantity})`);
+      console.log(`  🔒 ${item.name}: reserva ${product.stock_reserved || 0} → ${newReserved} (+${item.quantity})`);
     }
     
-    console.log(`✅ Estoque atualizado com sucesso!`);
+    console.log(`✅ Estoque reservado com sucesso!`);
 
     // Salva o pedido
     await db("orders").insert(newOrder);
@@ -471,14 +542,42 @@ app.put("/api/orders/:id", async (req, res) => {
   try {
     console.log(`📝 Atualizando pedido ${id} com payment ${paymentId}...`);
     
-    const exists = await db("orders").where({ id }).first();
-    if (!exists) {
+    const order = await db("orders").where({ id }).first();
+    if (!order) {
       return res.status(404).json({ error: "Pedido não encontrado" });
     }
 
     const updates = {};
     if (paymentId) updates.paymentId = paymentId;
     if (paymentStatus) updates.paymentStatus = paymentStatus;
+
+    // Se pagamento foi aprovado, CONFIRMA a dedução do estoque
+    if (paymentStatus === "paid" && order.paymentStatus === "pending") {
+      console.log(`✅ Pagamento aprovado! Confirmando dedução do estoque...`);
+      
+      const items = parseJSON(order.items);
+      
+      for (const item of items) {
+        const product = await db("products").where({ id: item.id }).first();
+        
+        if (product && product.stock !== null) {
+          // Deduz do estoque real e libera da reserva
+          const newStock = Math.max(0, product.stock - item.quantity);
+          const newReserved = Math.max(0, (product.stock_reserved || 0) - item.quantity);
+          
+          await db("products")
+            .where({ id: item.id })
+            .update({ 
+              stock: newStock,
+              stock_reserved: newReserved
+            });
+          
+          console.log(`  ✅ ${item.name}: ${product.stock} → ${newStock} (-${item.quantity}), reserva: ${product.stock_reserved} → ${newReserved}`);
+        }
+      }
+      
+      console.log(`🎉 Estoque confirmado e deduzido!`);
+    }
 
     await db("orders").where({ id }).update(updates);
     
@@ -498,11 +597,42 @@ app.put("/api/orders/:id", async (req, res) => {
 
 app.delete("/api/orders/:id", async (req, res) => {
   try {
+    const order = await db("orders").where({ id: req.params.id }).first();
+    
+    if (!order) {
+      return res.status(404).json({ error: "Pedido não encontrado" });
+    }
+    
+    // Se estava pendente, libera a reserva de estoque
+    if (order.paymentStatus === "pending") {
+      console.log(`🔓 Liberando reserva de estoque do pedido ${req.params.id}...`);
+      
+      const items = parseJSON(order.items);
+      
+      for (const item of items) {
+        const product = await db("products").where({ id: item.id }).first();
+        
+        if (product && product.stock !== null && product.stock_reserved > 0) {
+          const newReserved = Math.max(0, product.stock_reserved - item.quantity);
+          
+          await db("products")
+            .where({ id: item.id })
+            .update({ stock_reserved: newReserved });
+          
+          console.log(`  ↩️ ${item.name}: reserva ${product.stock_reserved} → ${newReserved}`);
+        }
+      }
+      
+      console.log(`✅ Reserva liberada!`);
+    }
+    
     await db("orders")
       .where({ id: req.params.id })
       .update({ status: "completed", completedAt: new Date().toISOString() });
+    
     res.json({ ok: true });
   } catch (e) {
+    console.error("❌ Erro ao finalizar pedido:", e);
     res.status(500).json({ error: "Erro ao finalizar" });
   }
 });
