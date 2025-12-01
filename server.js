@@ -180,7 +180,7 @@ async function initDatabase() {
       table.integer("stock_reserved").defaultTo(0); // Estoque reservado temporariamente
     });
   } else {
-    // Adiciona coluna stock_reserved se não existir
+    // Adiciona colunas que faltam se não existirem
     const hasReservedColumn = await db.schema.hasColumn("products", "stock_reserved");
     if (!hasReservedColumn) {
       await db.schema.table("products", (table) => {
@@ -188,7 +188,7 @@ async function initDatabase() {
       });
       console.log("✅ Coluna stock_reserved adicionada");
     }
-  } else {
+    
     // Migração: Adicionar coluna stock se não existir
     const hasStock = await db.schema.hasColumn("products", "stock");
     if (!hasStock) {
