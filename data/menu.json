@@ -5,7 +5,7 @@
     "description": "Clássico pastel recheado com carne moída temperada.",
     "price": 8.5,
     "category": "Pastel",
-    "videoUrl": "/videos/PastelDeCarne.mp4",
+    "videoUrl": "https://res.cloudinary.com/dol86yfg6/video/upload/v1764178446/PastelDeCarne_vf8pez.mp4",
     "popular": true
   },
   {
@@ -14,7 +14,7 @@
     "description": "Delicioso pastel com queijo mussarela derretido.",
     "price": 8.0,
     "category": "Pastel",
-    "videoUrl": "/videos/PastelDeQueijo.mp4",
+    "videoUrl": "https://res.cloudinary.com/dol86yfg6/video/upload/v1764178444/PastelDeQueijo_j5rp2d.mp4",
     "popular": true
   },
   {
@@ -23,7 +23,7 @@
     "description": "Saboroso pastel recheado com frango desfiado.",
     "price": 8.5,
     "category": "Pastel",
-    "videoUrl": "/videos/PastelDeFrangoComCatupiry.mp4",
+    "videoUrl": "https://res.cloudinary.com/dol86yfg6/video/upload/v1764178443/PastelDeFrangoComCatupiry_c08kfg.mp4",
     "popular": false
   },
   {
@@ -32,7 +32,7 @@
     "description": "Refrigerante de cola gelado em lata de 350ml.",
     "price": 5.0,
     "category": "Bebida",
-    "videoUrl": "/videos/CocaLata.mp4",
+    "videoUrl": "https://res.cloudinary.com/dol86yfg6/video/upload/v1764178443/CocaLata_ocgaxa.mp4",
     "popular": true
   },
   {
@@ -41,7 +41,7 @@
     "description": "Suco feito na hora com laranjas frescas (500ml).",
     "price": 7.0,
     "category": "Bebida",
-    "videoUrl": "/videos/SucoDeLaranja.mp4",
+    "videoUrl": "https://res.cloudinary.com/dol86yfg6/video/upload/v1764178443/SucoDeLaranja_xdgjqv.mp4",
     "popular": false
   },
   {
@@ -50,7 +50,7 @@
     "description": "Uma sobremesa incrível: pastel recheado com Nutella e morangos frescos.",
     "price": 10.0,
     "category": "Doce",
-    "videoUrl": "/videos/PastelDeNutellaComMorango.mp4",
+    "videoUrl": "https://res.cloudinary.com/dol86yfg6/video/upload/v1764178443/PastelDeNutellaComMorango_gha4ao.mp4",
     "popular": true
   }
 ]
