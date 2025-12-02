@@ -231,6 +231,15 @@ async function initDatabase() {
     });
   }
 
+  // Adiciona a coluna 'observation' se ela não existir
+  const hasObservationColumn = await db.schema.hasColumn("orders", "observation");
+  if (!hasObservationColumn) {
+    await db.schema.table("orders", (table) => {
+      table.text("observation"); // Usando text para permitir observações mais longas
+    });
+    console.log("✅ Coluna 'observation' adicionada à tabela orders");
+  }
+
   const result = await db("products").count("id as count").first();
   if (Number(result.count) === 0) {
     try {
@@ -455,11 +464,12 @@ app.get("/api/orders", async (req, res) => {
 });
 
 app.post("/api/orders", async (req, res) => {
-  const { userId, userName, items, total, paymentId } = req.body;
+  const { userId, userName, items, total, paymentId, observation } = req.body;
 
   const newOrder = {
     id: `order_${Date.now()}`,
     userId,
+    observation: observation || null, // Salva a observação ou null se não houver
     userName: userName || "Cliente",
     items: JSON.stringify(items || []),
     total: total || 0,
@@ -1729,6 +1739,7 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
         items: items.map(i => i.name).join(", "),
         hasHotFood: hasHotFood,
         hasColdFood: hasColdFood,
+        observation: order.observation, // Adiciona a observação aqui
         minutesWaiting: Math.round((Date.now() - new Date(order.timestamp).getTime()) / 60000)
       };
     });
@@ -1738,7 +1749,8 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
       `${idx + 1}. Pedido ${o.id} (${o.customerName})
    - Aguardando: ${o.minutesWaiting} min
    - Itens: ${o.itemCount} (${o.items})
-   - Tipo: ${o.hasHotFood ? '🔥 Quente' : ''} ${o.hasColdFood ? '❄️ Frio' : ''}`
+   - Tipo: ${o.hasHotFood ? '🔥 Quente' : ''} ${o.hasColdFood ? '❄️ Frio' : ''}
+   ${o.observation ? `- OBS: ${o.observation}` : ''}`
     ).join('\n\n');
 
     const completion = await openai.chat.completions.create({
