@@ -15,6 +15,8 @@ const openai = process.env.OPENAI_API_KEY
 
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
 const MP_DEVICE_ID = process.env.MP_DEVICE_ID;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const KITCHEN_PASSWORD = process.env.KITCHEN_PASSWORD;
 
 // --- Banco de Dados ---
 const dbConfig = process.env.DATABASE_URL
@@ -309,6 +311,40 @@ app.get("/api/webhooks/mercadopago", (req, res) => {
     method: "GET - Para receber notificações reais, o MP deve usar POST"
   });
 });
+
+// --- Rota de Autenticação Segura ---
+app.post("/api/auth/login", (req, res) => {
+  const { role, password } = req.body;
+
+  if (!role || !password) {
+    return res.status(400).json({ success: false, message: "Role e senha são obrigatórios" });
+  }
+
+  let correctPassword;
+  if (role === 'admin') {
+    correctPassword = ADMIN_PASSWORD;
+  } else if (role === 'kitchen') {
+    correctPassword = KITCHEN_PASSWORD;
+  } else {
+    return res.status(400).json({ success: false, message: "Role inválido" });
+  }
+
+  if (!correctPassword) {
+    console.error(`⚠️ A senha para a role '${role}' não está configurada nas variáveis de ambiente.`);
+    return res.status(500).json({ success: false, message: "Erro de configuração no servidor." });
+  }
+
+  if (password === correctPassword) {
+    // Para este caso de uso, uma resposta de sucesso é suficiente.
+    // Em sistemas mais complexos, aqui você geraria um token JWT.
+    console.log(`✅ Login bem-sucedido para a role: ${role}`);
+    res.json({ success: true, message: "Login bem-sucedido" });
+  } else {
+    console.log(`❌ Tentativa de login falhou para a role: ${role}`);
+    res.status(401).json({ success: false, message: "Senha inválida" });
+  }
+});
+
 
 // --- Rotas da API (Menu, Usuários, Pedidos) ---
 
