@@ -1199,6 +1199,44 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
 
       if (intent.state === "CANCELED" || intent.state === "ERROR") {
         console.log(`❌ Intent ${intent.state}`);
+
+        // --- LÓGICA DE CANCELAMENTO DO PEDIDO NO BANCO ---
+        const orderId = intent.additional_info?.external_reference;
+        if (orderId) {
+          console.log(`  -> Pedido associado: ${orderId}. Cancelando...`);
+          try {
+            const order = await db("orders").where({ id: orderId }).first();
+
+            // Apenas cancela se o pedido ainda estiver pendente
+            if (order && order.paymentStatus === 'pending') {
+              // 1. Libera o estoque reservado
+              const items = parseJSON(order.items);
+              for (const item of items) {
+                const product = await db("products").where({ id: item.id }).first();
+                if (product && product.stock !== null && product.stock_reserved > 0) {
+                  const newReserved = Math.max(0, product.stock_reserved - item.quantity);
+                  await db("products")
+                    .where({ id: item.id })
+                    .update({ stock_reserved: newReserved });
+                  console.log(`    ↩️ Estoque liberado para ${item.name}: ${product.stock_reserved} -> ${newReserved}`);
+                }
+              }
+
+              // 2. Atualiza o status do pedido para 'canceled'
+              await db("orders")
+                .where({ id: orderId })
+                .update({ paymentStatus: "canceled", status: "canceled" });
+              
+              console.log(`  ✅ Pedido ${orderId} e estoque atualizados com sucesso!`);
+            } else {
+              console.log(`  ⚠️ Pedido ${orderId} não está mais pendente ou não foi encontrado. Nenhuma ação necessária.`);
+            }
+          } catch (dbError) {
+            console.error(`  ❌ Erro ao cancelar o pedido ${orderId} no banco:`, dbError.message);
+          }
+        }
+        // --- FIM DA LÓGICA ---
+
         return res.json({ status: "canceled" });
       }
 
@@ -1259,87 +1297,32 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
   }
 
   try {
-    console.log(`🛑 CANCELAMENTO FORÇADO: ${paymentId}`);
+    console.log(`🛑 Tentando cancelar pagamento: ${paymentId}`);
     
+    // 1. Tenta cancelar como um Payment Intent da maquininha (Point)
     if (MP_DEVICE_ID) {
-      const baseUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
-      const urlIntent = `${baseUrl}/${paymentId}`;
+      const urlIntent = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents/${paymentId}`;
       
-      // ESTRATÉGIA: Limpar TODA a fila primeiro (forçado)
-      console.log(`🧹 LIMPANDO FILA COMPLETA (forçado)...`);
-      
-      try {
-        // 1. Lista todos os intents
-        const listResp = await fetch(baseUrl, {
-          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-        });
-        
-        if (listResp.ok) {
-          const listData = await listResp.json();
-          const events = listData.events || [];
-          
-          console.log(`  📋 ${events.length} intents na fila para remover`);
-          
-          // 2. Remove TODOS, incluindo o que está em OPEN
-          for (const ev of events) {
-            const iId = ev.payment_intent_id || ev.id;
-            
-            try {
-              console.log(`  🗑️ Removendo ${iId}...`);
-              
-              const delResp = await fetch(`${baseUrl}/${iId}`, {
-                method: "DELETE",
-                headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-              });
-              
-              if (delResp.ok || delResp.status === 204 || delResp.status === 404) {
-                console.log(`  ✅ ${iId} removido`);
-              } else if (delResp.status === 409) {
-                // 409 = está processando, aguarda 2s e tenta de novo
-                console.log(`  ⏳ ${iId} está processando, aguardando...`);
-                await new Promise(r => setTimeout(r, 2000));
-                
-                const retryResp = await fetch(`${baseUrl}/${iId}`, {
-                  method: "DELETE",
-                  headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-                });
-                
-                if (retryResp.ok || retryResp.status === 204 || retryResp.status === 404) {
-                  console.log(`  ✅ ${iId} removido na 2ª tentativa`);
-                } else {
-                  const errText = await retryResp.text();
-                  console.log(`  ⚠️ ${iId} ainda não removido: ${errText}`);
-                }
-              } else {
-                const errText = await delResp.text();
-                console.log(`  ⚠️ Erro ao remover ${iId}: ${errText}`);
-              }
-              
-            } catch (e) {
-              console.log(`  ❌ Exceção ao remover ${iId}: ${e.message}`);
-            }
-            
-            // Delay entre remoções
-            await new Promise(r => setTimeout(r, 300));
-          }
-          
-          console.log(`✅ PROCESSO DE LIMPEZA CONCLUÍDO!`);
-          console.log(`🔄 Maquininha deve voltar à tela inicial em alguns segundos...`);
-          
-          return res.json({ 
-            success: true, 
-            message: "Fila limpa - aguarde alguns segundos",
-            cancelled: true,
-            cleared: events.length
-          });
-        }
-      } catch (e) {
-        console.log(`❌ Erro ao limpar fila: ${e.message}`);
+      console.log(`  -> Enviando DELETE para a maquininha: ${urlIntent}`);
+      const intentResponse = await fetch(urlIntent, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+
+      // Se a requisição foi bem-sucedida (200, 204) ou se o recurso não foi encontrado (404, já foi cancelado), consideramos sucesso.
+      if (intentResponse.ok || intentResponse.status === 404) {
+        console.log(`✅ Comando de cancelamento para a maquininha enviado com sucesso para ${paymentId}.`);
+        return res.json({ success: true, message: "Pagamento na maquininha cancelado." });
+      }
+      // Se a API retornar 409, significa que o pagamento está sendo processado e não pode ser cancelado.
+      if (intentResponse.status === 409) {
+        console.log(`⚠️ Não foi possível cancelar ${paymentId} na maquininha: já está sendo processado.`);
+        return res.status(409).json({ success: false, message: "Pagamento em processamento, não pode ser cancelado." });
       }
     }
     
-    // 3. Se não conseguiu cancelar intent, tenta como payment PIX
-    console.log(`🔄 Tentando cancelar como Payment PIX...`);
+    // 2. Se não for um pagamento de maquininha ou se falhou, tenta cancelar como um pagamento PIX.
+    console.log(`  -> Tentando cancelar como Payment PIX...`);
     const urlPayment = `https://api.mercadopago.com/v1/payments/${paymentId}`;
     const response = await fetch(urlPayment, {
       method: "PUT",
@@ -1350,13 +1333,13 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
       body: JSON.stringify({ status: "cancelled" })
     });
 
-    if (response.ok || response.status === 404) {
+    if (response.ok) {
       console.log(`✅ Payment PIX ${paymentId} cancelado`);
       return res.json({ success: true, message: "PIX cancelado" });
     }
 
     // Se chegou aqui, não conseguiu cancelar
-    console.log(`⚠️ Não foi possível cancelar ${paymentId}`);
+    console.log(`⚠️ Não foi possível cancelar ${paymentId} como PIX ou Point.`);
     return res.json({ success: false, message: "Não foi possível cancelar - pode já estar finalizado" });
 
   } catch (error) {
