@@ -4,6 +4,8 @@ import path from "path";
 import cors from "cors";
 import OpenAI from "openai";
 import knex from "knex";
+import jwt from "jsonwebtoken";
+import { createClient } from "redis";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -17,6 +19,8 @@ const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
 const MP_DEVICE_ID = process.env.MP_DEVICE_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const KITCHEN_PASSWORD = process.env.KITCHEN_PASSWORD;
+const JWT_SECRET = process.env.JWT_SECRET;
+const REDIS_URL = process.env.REDIS_URL;
 
 // --- Banco de Dados ---
 const dbConfig = process.env.DATABASE_URL
@@ -53,15 +57,94 @@ const dbType = process.env.DATABASE_URL
   : "SQLite (Local)";
 console.log(`🗄️ Usando banco: ${dbType}`);
 
-// Cache de pagamentos confirmados (para resolver problema de sincronia MP)
+// --- Configuração Redis para Cache ---
+let redisClient = null;
+let useRedis = false;
+
+// Cache de pagamentos confirmados - Fallback Map para quando Redis não disponível
 const confirmedPayments = new Map();
 
-// Função para limpar cache antigo (a cada 1 hora)
+// Função para inicializar Redis (chamada junto com initDatabase)
+async function initRedis() {
+  if (REDIS_URL) {
+    try {
+      console.log("⏳ Conectando ao Redis...");
+      redisClient = createClient({ url: REDIS_URL });
+
+      redisClient.on("error", (err) => {
+        console.error("❌ Erro Redis:", err.message);
+        useRedis = false;
+        console.log("⚠️ Usando Map em memória como fallback");
+      });
+
+      redisClient.on("connect", () => {
+        console.log("✅ Redis conectado com sucesso!");
+        useRedis = true;
+      });
+
+      // Conecta ao Redis
+      await redisClient.connect();
+    } catch (error) {
+      console.error("❌ Falha ao conectar Redis:", error.message);
+      console.log("⚠️ Usando Map em memória como fallback");
+      redisClient = null;
+      useRedis = false;
+    }
+  } else {
+    console.log("ℹ️ REDIS_URL não configurado - usando Map em memória");
+  }
+}
+
+// Funções auxiliares para cache unificado (Redis ou Map)
+const cachePayment = async (key, value) => {
+  if (useRedis && redisClient) {
+    try {
+      await redisClient.setEx(key, 3600, JSON.stringify(value)); // Expira em 1 hora
+      return true;
+    } catch (error) {
+      console.error("❌ Erro ao salvar no Redis, usando Map:", error.message);
+      confirmedPayments.set(key, value);
+      return true;
+    }
+  } else {
+    confirmedPayments.set(key, value);
+    return true;
+  }
+};
+
+const getCachedPayment = async (key) => {
+  if (useRedis && redisClient) {
+    try {
+      const data = await redisClient.get(key);
+      return data ? JSON.parse(data) : null;
+    } catch (error) {
+      console.error("❌ Erro ao ler do Redis, usando Map:", error.message);
+      return confirmedPayments.get(key) || null;
+    }
+  } else {
+    return confirmedPayments.get(key) || null;
+  }
+};
+
+const deleteCachedPayment = async (key) => {
+  if (useRedis && redisClient) {
+    try {
+      await redisClient.del(key);
+    } catch (error) {
+      console.error("❌ Erro ao deletar do Redis:", error.message);
+    }
+  }
+  confirmedPayments.delete(key);
+};
+
+// Função para limpar cache antigo (a cada 1 hora) - apenas para Map (Redis tem TTL automático)
 setInterval(() => {
-  const oneHourAgo = Date.now() - 3600000;
-  for (const [key, value] of confirmedPayments.entries()) {
-    if (value.timestamp < oneHourAgo) {
-      confirmedPayments.delete(key);
+  if (!useRedis) {
+    const oneHourAgo = Date.now() - 3600000;
+    for (const [key, value] of confirmedPayments.entries()) {
+      if (value.timestamp < oneHourAgo) {
+        confirmedPayments.delete(key);
+      }
     }
   }
 }, 3600000);
@@ -70,42 +153,45 @@ setInterval(() => {
 // Evita que pagamentos antigos fiquem travando a maquininha
 setInterval(async () => {
   if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) return;
-  
+
   try {
     const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
     const response = await fetch(listUrl, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
-    
+
     if (response.ok) {
       const data = await response.json();
       const events = data.events || [];
-      
+
       if (events.length > 0) {
-        console.log(`🧹 [Auto-cleanup] Encontradas ${events.length} intent(s) pendentes na Point Pro 2`);
-        
+        console.log(
+          `🧹 [Auto-cleanup] Encontradas ${events.length} intent(s) pendentes na Point Pro 2`
+        );
+
         for (const ev of events) {
           const iId = ev.payment_intent_id || ev.id;
           const state = ev.state;
-          
+
           // Remove intents antigas (mais de 10 minutos) ou já finalizadas
-          const shouldClean = state === "FINISHED" || 
-                             state === "CANCELED" || 
-                             state === "ERROR";
-          
+          const shouldClean =
+            state === "FINISHED" || state === "CANCELED" || state === "ERROR";
+
           if (shouldClean) {
             try {
               await fetch(`${listUrl}/${iId}`, {
                 method: "DELETE",
                 headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
               });
-              console.log(`  ✅ Intent ${iId} (${state}) removida automaticamente`);
+              console.log(
+                `  ✅ Intent ${iId} (${state}) removida automaticamente`
+              );
             } catch (e) {
               console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
             }
           }
         }
-        
+
         console.log(`✅ [Auto-cleanup] Point Pro 2 verificada e limpa`);
       }
     }
@@ -117,46 +203,53 @@ setInterval(async () => {
 // 🧹 CRON: Libera estoque de pedidos pendentes expirados (>30 min)
 setInterval(async () => {
   try {
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-    
+    const thirtyMinutesAgo = new Date(
+      Date.now() - 30 * 60 * 1000
+    ).toISOString();
+
     // Busca pedidos pendentes antigos
     const expiredOrders = await db("orders")
       .where({ paymentStatus: "pending" })
       .where("timestamp", "<", thirtyMinutesAgo)
       .select("*");
-    
+
     if (expiredOrders.length > 0) {
-      console.log(`🧹 [CRON] ${expiredOrders.length} pedido(s) expirado(s) encontrado(s)`);
-      
+      console.log(
+        `🧹 [CRON] ${expiredOrders.length} pedido(s) expirado(s) encontrado(s)`
+      );
+
       for (const order of expiredOrders) {
         const items = parseJSON(order.items);
-        
+
         // Libera estoque reservado
         for (const item of items) {
           const product = await db("products").where({ id: item.id }).first();
-          
+
           if (product && product.stock !== null && product.stock_reserved > 0) {
-            const newReserved = Math.max(0, product.stock_reserved - item.quantity);
-            
+            const newReserved = Math.max(
+              0,
+              product.stock_reserved - item.quantity
+            );
+
             await db("products")
               .where({ id: item.id })
               .update({ stock_reserved: newReserved });
-            
-            console.log(`  ↩️ ${item.name}: liberando ${item.quantity} unidade(s) (reserva: ${product.stock_reserved} → ${newReserved})`);
+
+            console.log(
+              `  ↩️ ${item.name}: liberando ${item.quantity} unidade(s) (reserva: ${product.stock_reserved} → ${newReserved})`
+            );
           }
         }
-        
+
         // Marca pedido como expirado
-        await db("orders")
-          .where({ id: order.id })
-          .update({ 
-            status: "expired",
-            paymentStatus: "expired"
-          });
-        
+        await db("orders").where({ id: order.id }).update({
+          status: "expired",
+          paymentStatus: "expired",
+        });
+
         console.log(`  ❌ Pedido ${order.id} marcado como expirado`);
       }
-      
+
       console.log(`✅ [CRON] Estoque liberado com sucesso`);
     }
   } catch (error) {
@@ -183,14 +276,17 @@ async function initDatabase() {
     });
   } else {
     // Adiciona colunas que faltam se não existirem
-    const hasReservedColumn = await db.schema.hasColumn("products", "stock_reserved");
+    const hasReservedColumn = await db.schema.hasColumn(
+      "products",
+      "stock_reserved"
+    );
     if (!hasReservedColumn) {
       await db.schema.table("products", (table) => {
         table.integer("stock_reserved").defaultTo(0);
       });
       console.log("✅ Coluna stock_reserved adicionada");
     }
-    
+
     // Migração: Adicionar coluna stock se não existir
     const hasStock = await db.schema.hasColumn("products", "stock");
     if (!hasStock) {
@@ -234,7 +330,10 @@ async function initDatabase() {
   }
 
   // Adiciona a coluna 'observation' se ela não existir
-  const hasObservationColumn = await db.schema.hasColumn("orders", "observation");
+  const hasObservationColumn = await db.schema.hasColumn(
+    "orders",
+    "observation"
+  );
   if (!hasObservationColumn) {
     await db.schema.table("orders", (table) => {
       table.text("observation"); // Usando text para permitir observações mais longas
@@ -255,7 +354,7 @@ async function initDatabase() {
   } else {
     console.log(`✅ O banco já contém ${result.count} produtos.`);
   }
-  
+
   // Verifica OpenAI
   if (openai) {
     console.log("🤖 OpenAI configurada - IA disponível");
@@ -305,10 +404,10 @@ app.get("/health", (req, res) =>
 // Rota de teste do webhook (para verificar se está acessível)
 app.get("/api/webhooks/mercadopago", (req, res) => {
   console.log("📋 GET recebido no webhook - Teste manual ou verificação do MP");
-  res.status(200).json({ 
+  res.status(200).json({
     message: "Webhook endpoint ativo! Use POST para enviar notificações.",
     ready: true,
-    method: "GET - Para receber notificações reais, o MP deve usar POST"
+    method: "GET - Para receber notificações reais, o MP deve usar POST",
   });
 });
 
@@ -317,139 +416,218 @@ app.post("/api/auth/login", (req, res) => {
   const { role, password } = req.body;
 
   if (!role || !password) {
-    return res.status(400).json({ success: false, message: "Role e senha são obrigatórios" });
+    return res
+      .status(400)
+      .json({ success: false, message: "Role e senha são obrigatórios" });
   }
 
   let correctPassword;
-  if (role === 'admin') {
+  if (role === "admin") {
     correctPassword = ADMIN_PASSWORD;
-  } else if (role === 'kitchen') {
+  } else if (role === "kitchen") {
     correctPassword = KITCHEN_PASSWORD;
   } else {
     return res.status(400).json({ success: false, message: "Role inválido" });
   }
 
   if (!correctPassword) {
-    console.error(`⚠️ A senha para a role '${role}' não está configurada nas variáveis de ambiente.`);
-    return res.status(500).json({ success: false, message: "Erro de configuração no servidor." });
+    console.error(
+      `⚠️ A senha para a role '${role}' não está configurada nas variáveis de ambiente.`
+    );
+    return res
+      .status(500)
+      .json({ success: false, message: "Erro de configuração no servidor." });
   }
 
   if (password === correctPassword) {
-    // Para este caso de uso, uma resposta de sucesso é suficiente.
-    // Em sistemas mais complexos, aqui você geraria um token JWT.
+    if (!JWT_SECRET) {
+      console.error(
+        "🚨 JWT_SECRET não está configurado! Não é possível gerar token."
+      );
+      return res
+        .status(500)
+        .json({ success: false, message: "Erro de configuração no servidor." });
+    }
+    // Gera o token JWT com a role do usuário, válido por 8 horas
+    const token = jwt.sign({ role }, JWT_SECRET, { expiresIn: "8h" });
     console.log(`✅ Login bem-sucedido para a role: ${role}`);
-    res.json({ success: true, message: "Login bem-sucedido" });
+    res.json({ success: true, token });
   } else {
     console.log(`❌ Tentativa de login falhou para a role: ${role}`);
     res.status(401).json({ success: false, message: "Senha inválida" });
   }
 });
 
-
 // --- Rotas da API (Menu, Usuários, Pedidos) ---
 
 app.get("/api/menu", async (req, res) => {
   try {
     const products = await db("products").select("*").orderBy("id");
-    res.json(products.map((p) => {
-      const stockAvailable = p.stock === null 
-        ? null // ilimitado
-        : Math.max(0, p.stock - (p.stock_reserved || 0)); // disponível = total - reservado
-      
-      return {
-        ...p, 
-        price: parseFloat(p.price),
-        stock: p.stock,
-        stock_reserved: p.stock_reserved || 0,
-        stock_available: stockAvailable,
-        isAvailable: stockAvailable === null || stockAvailable > 0
-      };
-    }));
+    res.json(
+      products.map((p) => {
+        const stockAvailable =
+          p.stock === null
+            ? null // ilimitado
+            : Math.max(0, p.stock - (p.stock_reserved || 0)); // disponível = total - reservado
+
+        return {
+          ...p,
+          price: parseFloat(p.price),
+          stock: p.stock,
+          stock_reserved: p.stock_reserved || 0,
+          stock_available: stockAvailable,
+          isAvailable: stockAvailable === null || stockAvailable > 0,
+        };
+      })
+    );
   } catch (e) {
     res.status(500).json({ error: "Erro ao buscar menu" });
   }
 });
 
+// --- Middlewares de Autenticação e Autorização ---
+
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1]; // Formato: "Bearer TOKEN"
+
+  if (token == null) {
+    return res
+      .status(401)
+      .json({ error: "Acesso negado. Token não fornecido." });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      console.log(`❌ Token inválido: ${err.message}`);
+      return res.status(403).json({ error: "Token inválido ou expirado." });
+    }
+    req.user = user; // Adiciona o payload do token (ex: { role: 'admin' }) à requisição
+    next();
+  });
+};
+
+const authorizeAdmin = (req, res, next) => {
+  if (req.user.role !== "admin") {
+    return res
+      .status(403)
+      .json({ error: "Acesso negado. Requer permissão de administrador." });
+  }
+  next();
+};
+
+const authorizeKitchen = (req, res, next) => {
+  if (req.user.role !== "kitchen" && req.user.role !== "admin") {
+    return res.status(403).json({
+      error: "Acesso negado. Requer permissão da cozinha ou de administrador.",
+    });
+  }
+  next();
+};
+
 // CRUD de Produtos (Admin)
 
-app.post("/api/products", async (req, res) => {
-  const { id, name, description, price, category, videoUrl, popular, stock } = req.body;
-  
-  if (!name || !price || !category) {
-    return res.status(400).json({ error: "Nome, preço e categoria são obrigatórios" });
-  }
+app.post(
+  "/api/products",
+  authenticateToken,
+  authorizeAdmin,
+  async (req, res) => {
+    const { id, name, description, price, category, videoUrl, popular, stock } =
+      req.body;
 
-  try {
-    const newProduct = {
-      id: id || `prod_${Date.now()}`,
-      name,
-      description: description || "",
-      price: parseFloat(price),
-      category,
-      videoUrl: videoUrl || "",
-      popular: popular || false,
-      stock: stock !== undefined ? parseInt(stock) : null // null = ilimitado
-    };
-    
-    await db("products").insert(newProduct);
-    res.status(201).json({ ...newProduct, isAvailable: newProduct.stock === null || newProduct.stock > 0 });
-  } catch (e) {
-    console.error("Erro ao criar produto:", e);
-    res.status(500).json({ error: "Erro ao criar produto" });
-  }
-});
-
-app.put("/api/products/:id", async (req, res) => {
-  const { id } = req.params;
-  const { name, description, price, category, videoUrl, popular, stock } = req.body;
-
-  try {
-    const exists = await db("products").where({ id }).first();
-    if (!exists) {
-      return res.status(404).json({ error: "Produto não encontrado" });
+    if (!name || !price || !category) {
+      return res
+        .status(400)
+        .json({ error: "Nome, preço e categoria são obrigatórios" });
     }
 
-    const updates = {};
-    if (name !== undefined) updates.name = name;
-    if (description !== undefined) updates.description = description;
-    if (price !== undefined) updates.price = parseFloat(price);
-    if (category !== undefined) updates.category = category;
-    if (videoUrl !== undefined) updates.videoUrl = videoUrl;
-    if (popular !== undefined) updates.popular = popular;
-    if (stock !== undefined) updates.stock = stock === null ? null : parseInt(stock);
+    try {
+      const newProduct = {
+        id: id || `prod_${Date.now()}`,
+        name,
+        description: description || "",
+        price: parseFloat(price),
+        category,
+        videoUrl: videoUrl || "",
+        popular: popular || false,
+        stock: stock !== undefined ? parseInt(stock) : null, // null = ilimitado
+      };
 
-    await db("products").where({ id }).update(updates);
-    
-    const updated = await db("products").where({ id }).first();
-    res.json({ 
-      ...updated, 
-      price: parseFloat(updated.price),
-      isAvailable: updated.stock === null || updated.stock > 0
-    });
-  } catch (e) {
-    console.error("Erro ao atualizar produto:", e);
-    res.status(500).json({ error: "Erro ao atualizar produto" });
-  }
-});
-
-app.delete("/api/products/:id", async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const exists = await db("products").where({ id }).first();
-    if (!exists) {
-      return res.status(404).json({ error: "Produto não encontrado" });
+      await db("products").insert(newProduct);
+      res.status(201).json({
+        ...newProduct,
+        isAvailable: newProduct.stock === null || newProduct.stock > 0,
+      });
+    } catch (e) {
+      console.error("Erro ao criar produto:", e);
+      res.status(500).json({ error: "Erro ao criar produto" });
     }
-
-    await db("products").where({ id }).del();
-    res.json({ success: true, message: "Produto deletado com sucesso" });
-  } catch (e) {
-    console.error("Erro ao deletar produto:", e);
-    res.status(500).json({ error: "Erro ao deletar produto" });
   }
-});
+);
 
-app.get("/api/users", async (req, res) => {
+app.put(
+  "/api/products/:id",
+  authenticateToken,
+  authorizeAdmin,
+  async (req, res) => {
+    const { id } = req.params;
+    const { name, description, price, category, videoUrl, popular, stock } =
+      req.body;
+
+    try {
+      const exists = await db("products").where({ id }).first();
+      if (!exists) {
+        return res.status(404).json({ error: "Produto não encontrado" });
+      }
+
+      const updates = {};
+      if (name !== undefined) updates.name = name;
+      if (description !== undefined) updates.description = description;
+      if (price !== undefined) updates.price = parseFloat(price);
+      if (category !== undefined) updates.category = category;
+      if (videoUrl !== undefined) updates.videoUrl = videoUrl;
+      if (popular !== undefined) updates.popular = popular;
+      if (stock !== undefined)
+        updates.stock = stock === null ? null : parseInt(stock);
+
+      await db("products").where({ id }).update(updates);
+
+      const updated = await db("products").where({ id }).first();
+      res.json({
+        ...updated,
+        price: parseFloat(updated.price),
+        isAvailable: updated.stock === null || updated.stock > 0,
+      });
+    } catch (e) {
+      console.error("Erro ao atualizar produto:", e);
+      res.status(500).json({ error: "Erro ao atualizar produto" });
+    }
+  }
+);
+
+app.delete(
+  "/api/products/:id",
+  authenticateToken,
+  authorizeAdmin,
+  async (req, res) => {
+    const { id } = req.params;
+
+    try {
+      const exists = await db("products").where({ id }).first();
+      if (!exists) {
+        return res.status(404).json({ error: "Produto não encontrado" });
+      }
+
+      await db("products").where({ id }).del();
+      res.json({ success: true, message: "Produto deletado com sucesso" });
+    } catch (e) {
+      console.error("Erro ao deletar produto:", e);
+      res.status(500).json({ error: "Erro ao deletar produto" });
+    }
+  }
+);
+
+app.get("/api/users", authenticateToken, authorizeAdmin, async (req, res) => {
   try {
     const users = await db("users").select("*");
     res.json(users.map((u) => ({ ...u, historico: parseJSON(u.historico) })));
@@ -482,22 +660,27 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
-app.get("/api/orders", async (req, res) => {
-  try {
-    const orders = await db("orders")
-      .where({ status: "active" })
-      .orderBy("timestamp", "asc");
-    res.json(
-      orders.map((o) => ({
-        ...o,
-        items: parseJSON(o.items),
-        total: parseFloat(o.total),
-      }))
-    );
-  } catch (e) {
-    res.status(500).json({ error: "Erro ao buscar pedidos" });
+app.get(
+  "/api/orders",
+  authenticateToken,
+  authorizeKitchen,
+  async (req, res) => {
+    try {
+      const orders = await db("orders")
+        .where({ status: "active" })
+        .orderBy("timestamp", "asc");
+      res.json(
+        orders.map((o) => ({
+          ...o,
+          items: parseJSON(o.items),
+          total: parseFloat(o.total),
+        }))
+      );
+    } catch (e) {
+      res.status(500).json({ error: "Erro ao buscar pedidos" });
+    }
   }
-});
+);
 
 app.post("/api/orders", async (req, res) => {
   const { userId, userName, items, total, paymentId, observation } = req.body;
@@ -517,7 +700,7 @@ app.post("/api/orders", async (req, res) => {
 
   try {
     console.log(`📦 Criando pedido ${newOrder.id}...`);
-    
+
     // Garante que o usuário existe (para convidados)
     const userExists = await db("users").where({ id: userId }).first();
     if (!userExists) {
@@ -533,46 +716,52 @@ app.post("/api/orders", async (req, res) => {
 
     // ✅ RESERVA ESTOQUE AQUI (ANTES de inserir o pedido)
     console.log(`🔒 Reservando estoque de ${items.length} produto(s)...`);
-    
+
     for (const item of items) {
       const product = await db("products").where({ id: item.id }).first();
-      
+
       if (!product) {
         console.warn(`⚠️ Produto ${item.id} não encontrado no estoque`);
         continue;
       }
-      
+
       // Se stock é null = ilimitado, não precisa reservar
       if (product.stock === null) {
         console.log(`  ℹ️ ${item.name}: estoque ilimitado`);
         continue;
       }
-      
+
       // Calcula estoque disponível (total - reservado)
       const stockAvailable = product.stock - (product.stock_reserved || 0);
-      
+
       // Verifica se tem estoque disponível suficiente
       if (stockAvailable < item.quantity) {
-        throw new Error(`Estoque insuficiente para ${item.name}. Disponível: ${stockAvailable}, Solicitado: ${item.quantity}`);
+        throw new Error(
+          `Estoque insuficiente para ${item.name}. Disponível: ${stockAvailable}, Solicitado: ${item.quantity}`
+        );
       }
-      
+
       // Aumenta a RESERVA (não deduz ainda)
       const newReserved = (product.stock_reserved || 0) + item.quantity;
-      
+
       await db("products")
         .where({ id: item.id })
         .update({ stock_reserved: newReserved });
-      
-      console.log(`  🔒 ${item.name}: reserva ${product.stock_reserved || 0} → ${newReserved} (+${item.quantity})`);
+
+      console.log(
+        `  🔒 ${item.name}: reserva ${
+          product.stock_reserved || 0
+        } → ${newReserved} (+${item.quantity})`
+      );
     }
-    
+
     console.log(`✅ Estoque reservado com sucesso!`);
 
     // Salva o pedido
     await db("orders").insert(newOrder);
-    
+
     console.log(`✅ Pedido ${newOrder.id} criado com sucesso!`);
-    
+
     res.status(201).json({ ...newOrder, items: items || [] });
   } catch (e) {
     console.error("❌ Erro ao salvar pedido:", e);
@@ -587,7 +776,7 @@ app.put("/api/orders/:id", async (req, res) => {
 
   try {
     console.log(`📝 Atualizando pedido ${id} com payment ${paymentId}...`);
-    
+
     const order = await db("orders").where({ id }).first();
     if (!order) {
       return res.status(404).json({ error: "Pedido não encontrado" });
@@ -600,40 +789,43 @@ app.put("/api/orders/:id", async (req, res) => {
     // Se pagamento foi aprovado, CONFIRMA a dedução do estoque
     if (paymentStatus === "paid" && order.paymentStatus === "pending") {
       console.log(`✅ Pagamento aprovado! Confirmando dedução do estoque...`);
-      
+
       const items = parseJSON(order.items);
-      
+
       for (const item of items) {
         const product = await db("products").where({ id: item.id }).first();
-        
+
         if (product && product.stock !== null) {
           // Deduz do estoque real e libera da reserva
           const newStock = Math.max(0, product.stock - item.quantity);
-          const newReserved = Math.max(0, (product.stock_reserved || 0) - item.quantity);
-          
-          await db("products")
-            .where({ id: item.id })
-            .update({ 
-              stock: newStock,
-              stock_reserved: newReserved
-            });
-          
-          console.log(`  ✅ ${item.name}: ${product.stock} → ${newStock} (-${item.quantity}), reserva: ${product.stock_reserved} → ${newReserved}`);
+          const newReserved = Math.max(
+            0,
+            (product.stock_reserved || 0) - item.quantity
+          );
+
+          await db("products").where({ id: item.id }).update({
+            stock: newStock,
+            stock_reserved: newReserved,
+          });
+
+          console.log(
+            `  ✅ ${item.name}: ${product.stock} → ${newStock} (-${item.quantity}), reserva: ${product.stock_reserved} → ${newReserved}`
+          );
         }
       }
-      
+
       console.log(`🎉 Estoque confirmado e deduzido!`);
     }
 
     await db("orders").where({ id }).update(updates);
-    
+
     const updated = await db("orders").where({ id }).first();
     console.log(`✅ Pedido ${id} atualizado!`);
-    
-    res.json({ 
-      ...updated, 
+
+    res.json({
+      ...updated,
       items: parseJSON(updated.items),
-      total: parseFloat(updated.total)
+      total: parseFloat(updated.total),
     });
   } catch (e) {
     console.error("❌ Erro ao atualizar pedido:", e);
@@ -641,47 +833,59 @@ app.put("/api/orders/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/orders/:id", async (req, res) => {
-  try {
-    const order = await db("orders").where({ id: req.params.id }).first();
-    
-    if (!order) {
-      return res.status(404).json({ error: "Pedido não encontrado" });
-    }
-    
-    // Se estava pendente, libera a reserva de estoque
-    if (order.paymentStatus === "pending") {
-      console.log(`🔓 Liberando reserva de estoque do pedido ${req.params.id}...`);
-      
-      const items = parseJSON(order.items);
-      
-      for (const item of items) {
-        const product = await db("products").where({ id: item.id }).first();
-        
-        if (product && product.stock !== null && product.stock_reserved > 0) {
-          const newReserved = Math.max(0, product.stock_reserved - item.quantity);
-          
-          await db("products")
-            .where({ id: item.id })
-            .update({ stock_reserved: newReserved });
-          
-          console.log(`  ↩️ ${item.name}: reserva ${product.stock_reserved} → ${newReserved}`);
-        }
+app.delete(
+  "/api/orders/:id",
+  authenticateToken,
+  authorizeKitchen,
+  async (req, res) => {
+    try {
+      const order = await db("orders").where({ id: req.params.id }).first();
+
+      if (!order) {
+        return res.status(404).json({ error: "Pedido não encontrado" });
       }
-      
-      console.log(`✅ Reserva liberada!`);
+
+      // Se estava pendente, libera a reserva de estoque
+      if (order.paymentStatus === "pending") {
+        console.log(
+          `🔓 Liberando reserva de estoque do pedido ${req.params.id}...`
+        );
+
+        const items = parseJSON(order.items);
+
+        for (const item of items) {
+          const product = await db("products").where({ id: item.id }).first();
+
+          if (product && product.stock !== null && product.stock_reserved > 0) {
+            const newReserved = Math.max(
+              0,
+              product.stock_reserved - item.quantity
+            );
+
+            await db("products")
+              .where({ id: item.id })
+              .update({ stock_reserved: newReserved });
+
+            console.log(
+              `  ↩️ ${item.name}: reserva ${product.stock_reserved} → ${newReserved}`
+            );
+          }
+        }
+
+        console.log(`✅ Reserva liberada!`);
+      }
+
+      await db("orders")
+        .where({ id: req.params.id })
+        .update({ status: "completed", completedAt: new Date().toISOString() });
+
+      res.json({ ok: true });
+    } catch (e) {
+      console.error("❌ Erro ao finalizar pedido:", e);
+      res.status(500).json({ error: "Erro ao finalizar" });
     }
-    
-    await db("orders")
-      .where({ id: req.params.id })
-      .update({ status: "completed", completedAt: new Date().toISOString() });
-    
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("❌ Erro ao finalizar pedido:", e);
-    res.status(500).json({ error: "Erro ao finalizar" });
   }
-});
+);
 
 app.get("/api/user-orders", async (req, res) => {
   try {
@@ -711,7 +915,7 @@ app.get("/api/orders/:id", async (req, res) => {
     res.json({
       ...order,
       items: parseJSON(order.items),
-      total: parseFloat(order.total)
+      total: parseFloat(order.total),
     });
   } catch (e) {
     res.status(500).json({ error: "Erro ao buscar pedido" });
@@ -729,7 +933,7 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
   console.log("Query Params:", JSON.stringify(req.query, null, 2));
   console.log("Body:", JSON.stringify(req.body, null, 2));
   console.log(`${"=".repeat(60)}\n`);
-  
+
   try {
     // IPN envia dados via query params
     const { id, topic } = req.query;
@@ -748,23 +952,33 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
       });
       const payment = await respPayment.json();
 
-      console.log(`💳 Pagamento ${id} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`);
+      console.log(
+        `💳 Pagamento ${id} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`
+      );
 
       // Se aprovado, adiciona ao cache E DESCONTA DO ESTOQUE
       if (payment.status === "approved" || payment.status === "authorized") {
         const amountInCents = Math.round(payment.transaction_amount * 100);
         const cacheKey = `amount_${amountInCents}`;
-        
-        confirmedPayments.set(cacheKey, {
+
+        await cachePayment(cacheKey, {
           paymentId: payment.id,
           amount: payment.transaction_amount,
           status: payment.status,
           timestamp: Date.now(),
         });
 
-        console.log(`✅ Pagamento ${id} confirmado via IPN! Valor: R$ ${payment.transaction_amount}`);
-        console.log(`ℹ️ External reference: ${payment.external_reference || 'não informado'}`);
-        console.log(`ℹ️ Estoque já foi descontado no momento da criação do pedido (/api/orders)`);
+        console.log(
+          `✅ Pagamento ${id} confirmado via IPN! Valor: R$ ${payment.transaction_amount}`
+        );
+        console.log(
+          `ℹ️ External reference: ${
+            payment.external_reference || "não informado"
+          }`
+        );
+        console.log(
+          `ℹ️ Estoque já foi descontado no momento da criação do pedido (/api/orders)`
+        );
       }
     } else {
       console.log(`⚠️ IPN ignorado - Topic: ${topic}, ID: ${id}`);
@@ -776,7 +990,10 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
 
 // Endpoint teste para validar IPN
 app.get("/api/notifications/mercadopago", (req, res) => {
-  res.json({ status: "ready", message: "IPN endpoint ativo para pagamentos Point" });
+  res.json({
+    status: "ready",
+    message: "IPN endpoint ativo para pagamentos Point",
+  });
 });
 
 // --- WEBHOOK MERCADO PAGO (Notificação Instantânea) ---
@@ -789,7 +1006,7 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
   console.log("Headers:", JSON.stringify(req.headers, null, 2));
   console.log("Body:", JSON.stringify(req.body, null, 2));
   console.log(`${"=".repeat(60)}\n`);
-  
+
   try {
     const { action, data, type } = req.body;
 
@@ -799,7 +1016,7 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
     // Processa notificação em background
     if (action === "payment.created" || action === "payment.updated") {
       const paymentId = data?.id;
-      
+
       if (!paymentId) {
         console.log("⚠️ Webhook sem payment ID");
         return;
@@ -814,52 +1031,65 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
       });
       const payment = await respPayment.json();
 
-      console.log(`💳 Pagamento ${paymentId} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`);
+      console.log(
+        `💳 Pagamento ${paymentId} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`
+      );
 
       // Se aprovado, adiciona ao cache E DESCONTA DO ESTOQUE
       if (payment.status === "approved" || payment.status === "authorized") {
         const amountInCents = Math.round(payment.transaction_amount * 100);
         const cacheKey = `amount_${amountInCents}`;
-        
-        confirmedPayments.set(cacheKey, {
+
+        await cachePayment(cacheKey, {
           paymentId: payment.id,
           amount: payment.transaction_amount,
           status: payment.status,
           timestamp: Date.now(),
         });
 
-        console.log(`✅ Pagamento ${paymentId} confirmado via Webhook! Valor: R$ ${payment.transaction_amount}`);
-        
+        console.log(
+          `✅ Pagamento ${paymentId} confirmado via Webhook! Valor: R$ ${payment.transaction_amount}`
+        );
+
         // DESCONTA DO ESTOQUE usando external_reference (ID do pedido)
         const externalRef = payment.external_reference;
         if (externalRef) {
-          console.log(`📦 Processando desconto de estoque para pedido: ${externalRef}`);
-          
+          console.log(
+            `📦 Processando desconto de estoque para pedido: ${externalRef}`
+          );
+
           try {
             // Busca o pedido no banco
             const order = await db("orders").where({ id: externalRef }).first();
-            
+
             if (order) {
               const items = parseJSON(order.items);
               console.log(`  🛒 ${items.length} item(ns) no pedido`);
-              
+
               // Desconta cada produto
               for (const item of items) {
-                const product = await db("products").where({ id: item.id }).first();
-                
+                const product = await db("products")
+                  .where({ id: item.id })
+                  .first();
+
                 if (product && product.stock !== null) {
                   const newStock = product.stock - item.quantity;
-                  
+
                   await db("products")
                     .where({ id: item.id })
                     .update({ stock: Math.max(0, newStock) });
-                  
-                  console.log(`  ✅ ${item.name}: ${product.stock} → ${Math.max(0, newStock)} (${item.quantity} vendido)`);
+
+                  console.log(
+                    `  ✅ ${item.name}: ${product.stock} → ${Math.max(
+                      0,
+                      newStock
+                    )} (${item.quantity} vendido)`
+                  );
                 } else if (product) {
                   console.log(`  ℹ️ ${item.name}: estoque ilimitado`);
                 }
               }
-              
+
               console.log(`🎉 Estoque atualizado com sucesso!`);
             } else {
               console.log(`⚠️ Pedido ${externalRef} não encontrado no banco`);
@@ -894,27 +1124,29 @@ app.post("/api/payment/create-pix", async (req, res) => {
       transaction_amount: parseFloat(amount),
       description: description || `Pedido ${orderId}`,
       external_reference: orderId,
-      notification_url: `${process.env.FRONTEND_URL || 'https://backendkioskpro.onrender.com'}/api/notifications/mercadopago`,
+      notification_url: `${
+        process.env.FRONTEND_URL || "https://backendkioskpro.onrender.com"
+      }/api/notifications/mercadopago`,
       payment_methods: {
         excluded_payment_types: [
           { id: "credit_card" },
           { id: "debit_card" },
           { id: "ticket" },
-          { id: "bank_transfer" }
+          { id: "bank_transfer" },
         ],
-        installments: 1
-      }
+        installments: 1,
+      },
     };
 
     // Gera chave idempotente única para esta transação PIX
     const idempotencyKey = `pix_${orderId}_${Date.now()}`;
 
-    const response = await fetch('https://api.mercadopago.com/v1/orders', {
-      method: 'POST',
+    const response = await fetch("https://api.mercadopago.com/v1/orders", {
+      method: "POST",
       headers: {
-        'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-        'X-Idempotency-Key': idempotencyKey, // ← OBRIGATÓRIO
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+        "X-Idempotency-Key": idempotencyKey, // ← OBRIGATÓRIO
       },
       body: JSON.stringify(orderPayload),
     });
@@ -935,9 +1167,8 @@ app.post("/api/payment/create-pix", async (req, res) => {
       qr_code: data.qr_code,
       qr_code_base64: data.qr_code_base64,
       ticket_url: data.ticket_url,
-      type: 'pix'
+      type: "pix",
     });
-
   } catch (error) {
     console.error("Erro ao criar PIX:", error);
     res.status(500).json({ error: error.message });
@@ -963,7 +1194,7 @@ app.post("/api/pix/create", async (req, res) => {
       headers: {
         Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
         "Content-Type": "application/json",
-        "X-Idempotency-Key": idempotencyKey
+        "X-Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify({
         transaction_amount: parseFloat(amount),
@@ -971,11 +1202,12 @@ app.post("/api/pix/create", async (req, res) => {
         payment_method_id: "pix",
         payer: {
           email: email || "cliente@kiosk.com",
-          first_name: payerName || "Cliente"
+          first_name: payerName || "Cliente",
         },
         external_reference: orderId,
-        notification_url: "https://backendkioskpro.onrender.com/api/notifications/mercadopago"
-      })
+        notification_url:
+          "https://backendkioskpro.onrender.com/api/notifications/mercadopago",
+      }),
     });
 
     const data = await response.json();
@@ -985,20 +1217,21 @@ app.post("/api/pix/create", async (req, res) => {
       throw new Error(data.message || "Erro ao gerar PIX");
     }
 
-    const qrCodeBase64 = data.point_of_interaction?.transaction_data?.qr_code_base64;
-    const qrCodeCopyPaste = data.point_of_interaction?.transaction_data?.qr_code;
+    const qrCodeBase64 =
+      data.point_of_interaction?.transaction_data?.qr_code_base64;
+    const qrCodeCopyPaste =
+      data.point_of_interaction?.transaction_data?.qr_code;
     const paymentId = data.id;
 
     console.log(`✅ PIX gerado! Payment ID: ${paymentId}`);
 
-    res.json({ 
-      paymentId, 
-      qrCodeBase64, 
-      qrCodeCopyPaste, 
+    res.json({
+      paymentId,
+      qrCodeBase64,
+      qrCodeCopyPaste,
       status: "pending",
-      type: "pix"
+      type: "pix",
     });
-
   } catch (error) {
     console.error("❌ Erro ao criar PIX:", error);
     res.status(500).json({ error: error.message || "Falha ao gerar PIX" });
@@ -1007,16 +1240,19 @@ app.post("/api/pix/create", async (req, res) => {
 
 app.get("/api/pix/status/:id", async (req, res) => {
   const { id } = req.params;
-  
+
   if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token" });
 
   try {
     console.log(`💠 Verificando status PIX: ${id}`);
-    
-    const response = await fetch(`https://api.mercadopago.com/v1/payments/${id}`, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` }
-    });
-    
+
+    const response = await fetch(
+      `https://api.mercadopago.com/v1/payments/${id}`,
+      {
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      }
+    );
+
     const data = await response.json();
 
     console.log(`💠 Status PIX (${id}): ${data.status}`);
@@ -1024,9 +1260,8 @@ app.get("/api/pix/status/:id", async (req, res) => {
     if (data.status === "approved") {
       return res.json({ status: "approved", paymentId: id });
     }
-    
-    res.json({ status: data.status || "pending" });
 
+    res.json({ status: data.status || "pending" });
   } catch (error) {
     console.error("❌ Erro ao verificar PIX:", error);
     res.json({ status: "pending" });
@@ -1040,9 +1275,9 @@ app.post("/api/payment/create", async (req, res) => {
   const { amount, description, orderId, paymentMethod } = req.body;
 
   // ✅ DETECÇÃO AUTOMÁTICA: Se for PIX, gera QR Code (Payments API)
-  if (paymentMethod === 'pix') {
+  if (paymentMethod === "pix") {
     console.log(`🔀 PIX detectado - gerando QR Code (Payments API)`);
-    
+
     try {
       // Gera chave idempotente única
       const idempotencyKey = `pix_${orderId}_${Date.now()}`;
@@ -1054,20 +1289,21 @@ app.post("/api/payment/create", async (req, res) => {
         payer: {
           email: "cliente@totem.com.br",
           first_name: "Cliente",
-          last_name: "Totem"
+          last_name: "Totem",
         },
         external_reference: orderId,
-        notification_url: "https://backendkioskpro.onrender.com/api/notifications/mercadopago"
+        notification_url:
+          "https://backendkioskpro.onrender.com/api/notifications/mercadopago",
       };
-      
+
       console.log(`📤 Payload PIX:`, JSON.stringify(pixPayload, null, 2));
 
-      const response = await fetch('https://api.mercadopago.com/v1/payments', {
-        method: 'POST',
+      const response = await fetch("https://api.mercadopago.com/v1/payments", {
+        method: "POST",
         headers: {
-          'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
-          'Content-Type': 'application/json',
-          'X-Idempotency-Key': idempotencyKey,
+          Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+          "X-Idempotency-Key": idempotencyKey,
         },
         body: JSON.stringify(pixPayload),
       });
@@ -1080,15 +1316,19 @@ app.post("/api/payment/create", async (req, res) => {
       }
 
       console.log(`✅ PIX QR Code criado! Payment ID: ${data.id}`);
-      console.log(`📱 QR Code:`, data.point_of_interaction?.transaction_data?.qr_code?.substring(0, 50));
+      console.log(
+        `📱 QR Code:`,
+        data.point_of_interaction?.transaction_data?.qr_code?.substring(0, 50)
+      );
 
       return res.json({
         id: data.id,
         status: data.status,
         qr_code: data.point_of_interaction?.transaction_data?.qr_code,
-        qr_code_base64: data.point_of_interaction?.transaction_data?.qr_code_base64,
+        qr_code_base64:
+          data.point_of_interaction?.transaction_data?.qr_code_base64,
         ticket_url: data.point_of_interaction?.transaction_data?.ticket_url,
-        type: 'pix'
+        type: "pix",
       });
     } catch (error) {
       console.error("❌ Erro ao criar PIX:", error);
@@ -1104,7 +1344,7 @@ app.post("/api/payment/create", async (req, res) => {
 
   try {
     console.log(`💳 Criando payment intent na Point ${MP_DEVICE_ID}...`);
-    console.log(`💰 Método solicitado: ${paymentMethod || 'todos'}`);
+    console.log(`💰 Método solicitado: ${paymentMethod || "todos"}`);
 
     // Payload simplificado para Point Integration API
     const payload = {
@@ -1113,36 +1353,39 @@ app.post("/api/payment/create", async (req, res) => {
       additional_info: {
         external_reference: orderId,
         print_on_terminal: true,
-      }
+      },
     };
 
     // Se método especificado (crédito/débito), adiciona filtro
     if (paymentMethod) {
       const paymentTypeMap = {
-        'debit': 'debit_card',
-        'credit': 'credit_card'
+        debit: "debit_card",
+        credit: "credit_card",
       };
 
       const type = paymentTypeMap[paymentMethod];
-      
+
       if (type) {
         payload.payment = {
           type: type,
-          installments: paymentMethod === 'credit' ? 1 : undefined,
-          installments_cost: paymentMethod === 'credit' ? 'buyer' : undefined
+          installments: paymentMethod === "credit" ? 1 : undefined,
+          installments_cost: paymentMethod === "credit" ? "buyer" : undefined,
         };
         console.log(`🎯 Filtro ativo: ${type}`);
       }
     }
 
-    console.log(`📤 Payload Point Integration:`, JSON.stringify(payload, null, 2));
+    console.log(
+      `📤 Payload Point Integration:`,
+      JSON.stringify(payload, null, 2)
+    );
 
     const url = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
     const response = await fetch(url, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
     });
@@ -1150,7 +1393,10 @@ app.post("/api/payment/create", async (req, res) => {
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("❌ Erro ao criar payment intent:", JSON.stringify(data, null, 2));
+      console.error(
+        "❌ Erro ao criar payment intent:",
+        JSON.stringify(data, null, 2)
+      );
       console.error(`📡 Status HTTP: ${response.status}`);
       throw new Error(data.message || JSON.stringify(data.errors || data));
     }
@@ -1158,16 +1404,17 @@ app.post("/api/payment/create", async (req, res) => {
     console.log(`✅ Payment intent criado! ID: ${data.id}`);
     console.log(`📱 Status: ${data.state}`);
 
-    res.json({ 
-      id: data.id, 
+    res.json({
+      id: data.id,
       status: "open",
-      type: 'point'
+      type: "point",
     });
-
   } catch (error) {
     console.error("❌ Erro Pagamento Point:", error);
     console.error("❌ Stack trace:", error.stack);
-    res.status(500).json({ error: error.message || "Falha ao comunicar com maquininha" });
+    res
+      .status(500)
+      .json({ error: error.message || "Falha ao comunicar com maquininha" });
   }
 });
 
@@ -1196,21 +1443,24 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       if (intent.payment && intent.payment.id) {
         const realPaymentId = intent.payment.id;
         console.log(`✅ Payment Intent APROVADO! Payment ID: ${realPaymentId}`);
-        
+
         // Busca detalhes do pagamento real para confirmar status
         try {
           const paymentDetailsUrl = `https://api.mercadopago.com/v1/payments/${realPaymentId}`;
           const paymentDetailsResp = await fetch(paymentDetailsUrl, {
             headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
           });
-          
+
           if (paymentDetailsResp.ok) {
             const paymentDetails = await paymentDetailsResp.json();
             console.log(`💳 Pagamento real status: ${paymentDetails.status}`);
-            
-            if (paymentDetails.status === 'approved' || paymentDetails.status === 'authorized') {
+
+            if (
+              paymentDetails.status === "approved" ||
+              paymentDetails.status === "authorized"
+            ) {
               console.log(`✅ PAGAMENTO CONFIRMADO COMO APROVADO!`);
-              
+
               // Limpa a intent da fila
               try {
                 await fetch(intentUrl, {
@@ -1221,18 +1471,18 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
               } catch (e) {
                 console.log(`⚠️ Erro ao limpar intent: ${e.message}`);
               }
-              
-              return res.json({ 
-                status: "approved", 
+
+              return res.json({
+                status: "approved",
                 paymentId: realPaymentId,
-                paymentStatus: paymentDetails.status
+                paymentStatus: paymentDetails.status,
               });
             }
           }
         } catch (e) {
           console.log(`⚠️ Erro ao buscar detalhes do pagamento: ${e.message}`);
         }
-        
+
         // Fallback: se não conseguiu buscar detalhes, retorna como aprovado mesmo assim
         return res.json({ status: "approved", paymentId: realPaymentId });
       }
@@ -1254,17 +1504,28 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
             const order = await db("orders").where({ id: orderId }).first();
 
             // Apenas cancela se o pedido ainda estiver pendente
-            if (order && order.paymentStatus === 'pending') {
+            if (order && order.paymentStatus === "pending") {
               // 1. Libera o estoque reservado
               const items = parseJSON(order.items);
               for (const item of items) {
-                const product = await db("products").where({ id: item.id }).first();
-                if (product && product.stock !== null && product.stock_reserved > 0) {
-                  const newReserved = Math.max(0, product.stock_reserved - item.quantity);
+                const product = await db("products")
+                  .where({ id: item.id })
+                  .first();
+                if (
+                  product &&
+                  product.stock !== null &&
+                  product.stock_reserved > 0
+                ) {
+                  const newReserved = Math.max(
+                    0,
+                    product.stock_reserved - item.quantity
+                  );
                   await db("products")
                     .where({ id: item.id })
                     .update({ stock_reserved: newReserved });
-                  console.log(`    ↩️ Estoque liberado para ${item.name}: ${product.stock_reserved} -> ${newReserved}`);
+                  console.log(
+                    `    ↩️ Estoque liberado para ${item.name}: ${product.stock_reserved} -> ${newReserved}`
+                  );
                 }
               }
 
@@ -1272,13 +1533,20 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
               await db("orders")
                 .where({ id: orderId })
                 .update({ paymentStatus: "canceled", status: "canceled" });
-              
-              console.log(`  ✅ Pedido ${orderId} e estoque atualizados com sucesso!`);
+
+              console.log(
+                `  ✅ Pedido ${orderId} e estoque atualizados com sucesso!`
+              );
             } else {
-              console.log(`  ⚠️ Pedido ${orderId} não está mais pendente ou não foi encontrado. Nenhuma ação necessária.`);
+              console.log(
+                `  ⚠️ Pedido ${orderId} não está mais pendente ou não foi encontrado. Nenhuma ação necessária.`
+              );
             }
           } catch (dbError) {
-            console.error(`  ❌ Erro ao cancelar o pedido ${orderId} no banco:`, dbError.message);
+            console.error(
+              `  ❌ Erro ao cancelar o pedido ${orderId} no banco:`,
+              dbError.message
+            );
           }
         }
         // --- FIM DA LÓGICA ---
@@ -1302,10 +1570,13 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
       const payment = await paymentResponse.json();
       console.log(`💚 Payment ${paymentId} | Status: ${payment.status}`);
 
-      if (payment.status === 'approved') {
+      if (payment.status === "approved") {
         console.log(`✅ Payment PIX APROVADO!`);
         return res.json({ status: "approved", paymentId: payment.id });
-      } else if (payment.status === 'cancelled' || payment.status === 'rejected') {
+      } else if (
+        payment.status === "cancelled" ||
+        payment.status === "rejected"
+      ) {
         console.log(`❌ Payment ${payment.status.toUpperCase()}`);
         return res.json({ status: "canceled" });
       }
@@ -1317,7 +1588,6 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
     // 3. Não encontrado em nenhum lugar
     console.log(`⚠️ Pagamento ${paymentId} não encontrado`);
     res.json({ status: "pending" });
-
   } catch (error) {
     console.error("❌ Erro ao verificar status:", error.message);
     res.json({ status: "pending" });
@@ -1326,7 +1596,9 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
 
 // ENDPOINT LEGADO (para compatibilidade temporária com antigo sistema)
 app.get("/api/payment/status-pix/:orderId", async (req, res) => {
-  console.log(`⚠️ Endpoint legado /status-pix chamado - redirecionando para /status`);
+  console.log(
+    `⚠️ Endpoint legado /status-pix chamado - redirecionando para /status`
+  );
   return res.redirect(307, `/api/payment/status/${req.params.orderId}`);
 });
 
@@ -1344,11 +1616,11 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
 
   try {
     console.log(`🛑 Tentando cancelar pagamento: ${paymentId}`);
-    
+
     // 1. Tenta cancelar como um Payment Intent da maquininha (Point)
     if (MP_DEVICE_ID) {
       const urlIntent = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents/${paymentId}`;
-      
+
       console.log(`  -> Enviando DELETE para a maquininha: ${urlIntent}`);
       const intentResponse = await fetch(urlIntent, {
         method: "DELETE",
@@ -1357,26 +1629,36 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
 
       // Se a requisição foi bem-sucedida (200, 204) ou se o recurso não foi encontrado (404, já foi cancelado), consideramos sucesso.
       if (intentResponse.ok || intentResponse.status === 404) {
-        console.log(`✅ Comando de cancelamento para a maquininha enviado com sucesso para ${paymentId}.`);
-        return res.json({ success: true, message: "Pagamento na maquininha cancelado." });
+        console.log(
+          `✅ Comando de cancelamento para a maquininha enviado com sucesso para ${paymentId}.`
+        );
+        return res.json({
+          success: true,
+          message: "Pagamento na maquininha cancelado.",
+        });
       }
       // Se a API retornar 409, significa que o pagamento está sendo processado e não pode ser cancelado.
       if (intentResponse.status === 409) {
-        console.log(`⚠️ Não foi possível cancelar ${paymentId} na maquininha: já está sendo processado.`);
-        return res.status(409).json({ success: false, message: "Pagamento em processamento, não pode ser cancelado." });
+        console.log(
+          `⚠️ Não foi possível cancelar ${paymentId} na maquininha: já está sendo processado.`
+        );
+        return res.status(409).json({
+          success: false,
+          message: "Pagamento em processamento, não pode ser cancelado.",
+        });
       }
     }
-    
+
     // 2. Se não for um pagamento de maquininha ou se falhou, tenta cancelar como um pagamento PIX.
     console.log(`  -> Tentando cancelar como Payment PIX...`);
     const urlPayment = `https://api.mercadopago.com/v1/payments/${paymentId}`;
     const response = await fetch(urlPayment, {
       method: "PUT",
-      headers: { 
+      headers: {
         Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify({ status: "cancelled" })
+      body: JSON.stringify({ status: "cancelled" }),
     });
 
     if (response.ok) {
@@ -1386,8 +1668,10 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
 
     // Se chegou aqui, não conseguiu cancelar
     console.log(`⚠️ Não foi possível cancelar ${paymentId} como PIX ou Point.`);
-    return res.json({ success: false, message: "Não foi possível cancelar - pode já estar finalizado" });
-
+    return res.json({
+      success: false,
+      message: "Não foi possível cancelar - pode já estar finalizado",
+    });
   } catch (error) {
     console.error("❌ Erro ao cancelar pagamento:", error.message);
     res.status(500).json({ success: false, error: error.message });
@@ -1402,32 +1686,32 @@ app.post("/api/payment/clear-all", async (req, res) => {
 
   try {
     console.log(`🧹 [CLEAR ALL] Limpando TODA a fila da maquininha...`);
-    
+
     const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
     const listResp = await fetch(listUrl, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
-    
+
     if (!listResp.ok) {
       return res.json({ success: false, error: "Erro ao listar intents" });
     }
-    
+
     const listData = await listResp.json();
     const events = listData.events || [];
-    
+
     console.log(`🔍 Encontradas ${events.length} intent(s) na fila`);
-    
+
     let cleared = 0;
-    
+
     for (const ev of events) {
       const iId = ev.payment_intent_id || ev.id;
-      
+
       try {
         const delResp = await fetch(`${listUrl}/${iId}`, {
           method: "DELETE",
           headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
         });
-        
+
         if (delResp.ok || delResp.status === 404) {
           console.log(`  ✅ Intent ${iId} removida`);
           cleared++;
@@ -1435,19 +1719,20 @@ app.post("/api/payment/clear-all", async (req, res) => {
       } catch (e) {
         console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
       }
-      
+
       // Pequeno delay entre remoções
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 100));
     }
-    
-    console.log(`✅ [CLEAR ALL] ${cleared} intent(s) removida(s) - Maquininha limpa!`);
-    
-    res.json({ 
-      success: true, 
+
+    console.log(
+      `✅ [CLEAR ALL] ${cleared} intent(s) removida(s) - Maquininha limpa!`
+    );
+
+    res.json({
+      success: true,
       cleared: cleared,
-      message: `${cleared} pagamento(s) removido(s) da fila` 
+      message: `${cleared} pagamento(s) removido(s) da fila`,
     });
-    
   } catch (error) {
     console.error("❌ Erro ao limpar fila:", error.message);
     res.status(500).json({ success: false, error: error.message });
@@ -1462,41 +1747,40 @@ app.post("/api/point/configure", async (req, res) => {
 
   try {
     console.log(`⚙️ Configurando Point Smart 2: ${MP_DEVICE_ID}`);
-    
+
     // Configuração do dispositivo Point Smart
     const configUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}`;
-    
+
     const configPayload = {
-      operating_mode: 'PDV', // Modo PDV - integração com frente de caixa
+      operating_mode: "PDV", // Modo PDV - integração com frente de caixa
       // Isso mantém a Point vinculada e bloqueia acesso ao menu
     };
-    
+
     const response = await fetch(configUrl, {
-      method: 'PATCH',
+      method: "PATCH",
       headers: {
-        'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
+        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify(configPayload),
     });
-    
+
     if (response.ok) {
       const data = await response.json();
       console.log(`✅ Point Smart 2 configurada em modo PDV`);
       console.log(`🔒 Menu bloqueado - apenas pagamentos via API`);
-      
-      return res.json({ 
-        success: true, 
+
+      return res.json({
+        success: true,
         message: "Point configurada com sucesso",
-        mode: 'PDV',
-        device: data
+        mode: "PDV",
+        device: data,
       });
     } else {
       const error = await response.json();
       console.error(`❌ Erro ao configurar Point:`, error);
       return res.status(400).json({ success: false, error: error.message });
     }
-    
   } catch (error) {
     console.error("❌ Erro ao configurar Point Smart 2:", error.message);
     res.status(500).json({ success: false, error: error.message });
@@ -1507,38 +1791,44 @@ app.post("/api/point/configure", async (req, res) => {
 app.get("/api/point/status", async (req, res) => {
   if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
     console.error("⚠️ Status Point: Credenciais não configuradas");
-    console.error(`MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN ? 'OK' : 'AUSENTE'}`);
-    console.error(`MP_DEVICE_ID: ${MP_DEVICE_ID || 'AUSENTE'}`);
-    return res.json({ connected: false, error: "Credenciais não configuradas" });
+    console.error(`MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN ? "OK" : "AUSENTE"}`);
+    console.error(`MP_DEVICE_ID: ${MP_DEVICE_ID || "AUSENTE"}`);
+    return res.json({
+      connected: false,
+      error: "Credenciais não configuradas",
+    });
   }
 
   try {
     console.log(`🔍 Verificando status da Point: ${MP_DEVICE_ID}`);
-    
+
     const deviceUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}`;
     const response = await fetch(deviceUrl, {
-      headers: { 'Authorization': `Bearer ${MP_ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
-    
+
     console.log(`📡 Resposta API Point: Status ${response.status}`);
-    
+
     if (response.ok) {
       const device = await response.json();
       console.log(`✅ Point encontrada:`, device);
-      
+
       return res.json({
         connected: true,
         id: device.id,
         operating_mode: device.operating_mode,
         status: device.status,
-        model: device.model || 'Point Smart 2',
+        model: device.model || "Point Smart 2",
       });
     } else {
       const errorData = await response.json();
       console.error(`❌ Erro ao buscar Point:`, errorData);
-      return res.json({ connected: false, error: "Point não encontrada", details: errorData });
+      return res.json({
+        connected: false,
+        error: "Point não encontrada",
+        details: errorData,
+      });
     }
-    
   } catch (error) {
     console.error("❌ Exceção ao verificar Point:", error);
     res.status(500).json({ connected: false, error: error.message });
@@ -1553,33 +1843,33 @@ app.post("/api/payment/clear-queue", async (req, res) => {
 
   try {
     console.log(`🧹 [CLEAR QUEUE] Limpando TODA a fila da Point Pro 2...`);
-    
+
     const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
     const listResp = await fetch(listUrl, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
-    
+
     if (!listResp.ok) {
       return res.json({ success: false, error: "Erro ao listar intents" });
     }
-    
+
     const listData = await listResp.json();
     const events = listData.events || [];
-    
+
     console.log(`🔍 Encontradas ${events.length} intent(s) na fila`);
-    
+
     let cleared = 0;
-    
+
     for (const ev of events) {
       const iId = ev.payment_intent_id || ev.id;
       const state = ev.state;
-      
+
       try {
         const delResp = await fetch(`${listUrl}/${iId}`, {
           method: "DELETE",
           headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
         });
-        
+
         if (delResp.ok || delResp.status === 404) {
           console.log(`  ✅ Intent ${iId} (${state}) removida`);
           cleared++;
@@ -1587,19 +1877,20 @@ app.post("/api/payment/clear-queue", async (req, res) => {
       } catch (e) {
         console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
       }
-      
+
       // Pequeno delay entre remoções
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 200));
     }
-    
-    console.log(`✅ [CLEAR QUEUE] ${cleared} intent(s) removida(s) - Point Pro 2 completamente limpa!`);
-    
-    res.json({ 
-      success: true, 
+
+    console.log(
+      `✅ [CLEAR QUEUE] ${cleared} intent(s) removida(s) - Point Pro 2 completamente limpa!`
+    );
+
+    res.json({
+      success: true,
       cleared: cleared,
-      message: `${cleared} pagamento(s) removido(s) da fila` 
+      message: `${cleared} pagamento(s) removido(s) da fila`,
     });
-    
   } catch (error) {
     console.error("❌ Erro ao limpar fila:", error.message);
     res.status(500).json({ success: false, error: error.message });
@@ -1610,28 +1901,46 @@ app.post("/api/payment/clear-queue", async (req, res) => {
 
 app.post("/api/ai/suggestion", async (req, res) => {
   if (!openai) {
-    console.log("❌ OpenAI não inicializada - OPENAI_API_KEY está configurada?");
+    console.log(
+      "❌ OpenAI não inicializada - OPENAI_API_KEY está configurada?"
+    );
     return res.json({ text: "IA indisponível" });
   }
   try {
     console.log("🤖 Chamando OpenAI para sugestão...");
-    
+
     // Busca TODOS os produtos disponíveis no catálogo
-    const products = await db("products").select("id", "name", "description", "price", "category", "stock");
-    const availableProducts = products.filter(p => p.stock === null || p.stock > 0);
-    
+    const products = await db("products").select(
+      "id",
+      "name",
+      "description",
+      "price",
+      "category",
+      "stock"
+    );
+    const availableProducts = products.filter(
+      (p) => p.stock === null || p.stock > 0
+    );
+
     // Monta lista formatada dos produtos
-    const productList = availableProducts.map(p => 
-      `- ${p.name} (${p.category}) - R$ ${p.price} ${p.description ? '- ' + p.description : ''}`
-    ).join('\n');
-    
-    console.log(`📋 ${availableProducts.length} produtos disponíveis no catálogo`);
-    
+    const productList = availableProducts
+      .map(
+        (p) =>
+          `- ${p.name} (${p.category}) - R$ ${p.price} ${
+            p.description ? "- " + p.description : ""
+          }`
+      )
+      .join("\n");
+
+    console.log(
+      `📋 ${availableProducts.length} produtos disponíveis no catálogo`
+    );
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { 
-          role: "system", 
+        {
+          role: "system",
           content: `Você é um vendedor de uma pastelaria/lanchonete. Recomende APENAS produtos que estão no nosso catálogo abaixo. NUNCA invente produtos que não existem na lista.
 
 CATÁLOGO DISPONÍVEL:
@@ -1641,7 +1950,7 @@ REGRAS:
 - Recomende APENAS produtos da lista acima
 - Seja breve e direto (máximo 2-3 produtos)
 - Mencione o nome EXATO do produto
-- Seja simpático e convincente` 
+- Seja simpático e convincente`,
         },
         { role: "user", content: req.body.prompt },
       ],
@@ -1658,7 +1967,9 @@ REGRAS:
 
 app.post("/api/ai/chat", async (req, res) => {
   if (!openai) {
-    console.log("❌ OpenAI não inicializada - OPENAI_API_KEY está configurada?");
+    console.log(
+      "❌ OpenAI não inicializada - OPENAI_API_KEY está configurada?"
+    );
     return res.status(503).json({ error: "IA indisponível" });
   }
   try {
@@ -1685,10 +1996,10 @@ app.post("/api/ai/chat", async (req, res) => {
 // Cache da otimização de cozinha
 let kitchenCache = {
   orders: [],
-  reasoning: '',
+  reasoning: "",
   aiEnabled: false,
-  lastOrderIds: '', // Hash dos IDs para detectar mudanças
-  timestamp: 0
+  lastOrderIds: "", // Hash dos IDs para detectar mudanças
+  timestamp: 0,
 };
 
 app.get("/api/ai/kitchen-priority", async (req, res) => {
@@ -1700,11 +2011,11 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
         .where({ status: "active" })
         .orderBy("timestamp", "asc")
         .select("*");
-      
-      return res.json({ 
-        orders: orders.map(o => ({ ...o, items: parseJSON(o.items) })),
+
+      return res.json({
+        orders: orders.map((o) => ({ ...o, items: parseJSON(o.items) })),
         aiEnabled: false,
-        message: "IA indisponível - ordem cronológica"
+        message: "IA indisponível - ordem cronológica",
       });
     } catch (e) {
       return res.status(500).json({ error: "Erro ao buscar pedidos" });
@@ -1721,29 +2032,35 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
     if (orders.length === 0) {
       kitchenCache = {
         orders: [],
-        reasoning: '',
+        reasoning: "",
         aiEnabled: true,
-        lastOrderIds: '',
-        timestamp: Date.now()
+        lastOrderIds: "",
+        timestamp: Date.now(),
       };
-      return res.json({ 
-        orders: [], 
+      return res.json({
+        orders: [],
         aiEnabled: true,
-        message: "Nenhum pedido pendente"
+        message: "Nenhum pedido pendente",
       });
     }
 
     // 2. Verifica se houve mudanças (novo pedido ou pedido concluído)
-    const currentOrderIds = orders.map(o => o.id).sort().join(',');
-    
+    const currentOrderIds = orders
+      .map((o) => o.id)
+      .sort()
+      .join(",");
+
     if (kitchenCache.lastOrderIds === currentOrderIds) {
-      console.log("♻️ Cache válido - retornando otimização anterior (sem chamar IA)");
+      console.log(
+        "♻️ Cache válido - retornando otimização anterior (sem chamar IA)"
+      );
       return res.json({
         orders: kitchenCache.orders,
         aiEnabled: kitchenCache.aiEnabled,
         reasoning: kitchenCache.reasoning,
         cached: true,
-        cacheAge: Math.round((Date.now() - kitchenCache.timestamp) / 1000) + 's'
+        cacheAge:
+          Math.round((Date.now() - kitchenCache.timestamp) / 1000) + "s",
       });
     }
 
@@ -1753,47 +2070,58 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
     // 2. Busca informações dos produtos para calcular complexidade
     const products = await db("products").select("*");
     const productMap = {};
-    products.forEach(p => {
+    products.forEach((p) => {
       productMap[p.id] = p;
     });
 
     // 3. Prepara dados dos pedidos para IA analisar
-    const orderDetails = orders.map(order => {
+    const orderDetails = orders.map((order) => {
       const items = parseJSON(order.items);
       const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
-      
+
       // Calcula "peso" do pedido (quantidade x complexidade estimada)
-      const categories = items.map(item => productMap[item.id]?.category || "outro");
-      const hasHotFood = categories.some(c => ["Pastel", "Hambúrguer", "Pizza"].includes(c));
-      const hasColdFood = categories.some(c => ["Bebida", "Suco", "Sobremesa"].includes(c));
-      
+      const categories = items.map(
+        (item) => productMap[item.id]?.category || "outro"
+      );
+      const hasHotFood = categories.some((c) =>
+        ["Pastel", "Hambúrguer", "Pizza"].includes(c)
+      );
+      const hasColdFood = categories.some((c) =>
+        ["Bebida", "Suco", "Sobremesa"].includes(c)
+      );
+
       return {
         id: order.id,
         timestamp: order.timestamp,
         customerName: order.userName,
         itemCount: itemCount,
-        items: items.map(i => i.name).join(", "),
+        items: items.map((i) => i.name).join(", "),
         hasHotFood: hasHotFood,
         hasColdFood: hasColdFood,
         observation: order.observation, // Adiciona a observação aqui
-        minutesWaiting: Math.round((Date.now() - new Date(order.timestamp).getTime()) / 60000)
+        minutesWaiting: Math.round(
+          (Date.now() - new Date(order.timestamp).getTime()) / 60000
+        ),
       };
     });
 
     // 4. Monta prompt para IA otimizar ordem
-    const ordersText = orderDetails.map((o, idx) => 
-      `${idx + 1}. Pedido ${o.id} (${o.customerName})
+    const ordersText = orderDetails
+      .map(
+        (o, idx) =>
+          `${idx + 1}. Pedido ${o.id} (${o.customerName})
    - Aguardando: ${o.minutesWaiting} min
    - Itens: ${o.itemCount} (${o.items})
-   - Tipo: ${o.hasHotFood ? '🔥 Quente' : ''} ${o.hasColdFood ? '❄️ Frio' : ''}
-   ${o.observation ? `- OBS: ${o.observation}` : ''}`
-    ).join('\n\n');
+   - Tipo: ${o.hasHotFood ? "🔥 Quente" : ""} ${o.hasColdFood ? "❄️ Frio" : ""}
+   ${o.observation ? `- OBS: ${o.observation}` : ""}`
+      )
+      .join("\n\n");
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { 
-          role: "system", 
+        {
+          role: "system",
           content: `Você é um assistente de cozinha especializado em otimizar a ordem de preparo de pedidos.
 
 REGRAS DE PRIORIZAÇÃO:
@@ -1809,11 +2137,11 @@ RESPONDA NO FORMATO JSON:
   "reasoning": "Explicação breve da estratégia"
 }
 
-Retorne APENAS o JSON, sem texto adicional.`
+Retorne APENAS o JSON, sem texto adicional.`,
         },
-        { 
-          role: "user", 
-          content: `Otimize a ordem de preparo destes pedidos:\n\n${ordersText}` 
+        {
+          role: "user",
+          content: `Otimize a ordem de preparo destes pedidos:\n\n${ordersText}`,
         },
       ],
       max_tokens: 500,
@@ -1827,31 +2155,37 @@ Retorne APENAS o JSON, sem texto adicional.`
     let aiSuggestion;
     try {
       // Remove markdown code blocks se existir
-      const cleanJson = aiResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      const cleanJson = aiResponse
+        .replace(/```json\n?/g, "")
+        .replace(/```\n?/g, "");
       aiSuggestion = JSON.parse(cleanJson);
     } catch (parseError) {
       console.error("❌ Erro ao parsear resposta da IA:", parseError);
       // Fallback: ordem cronológica
       return res.json({
-        orders: orders.map(o => ({ ...o, items: parseJSON(o.items) })),
+        orders: orders.map((o) => ({ ...o, items: parseJSON(o.items) })),
         aiEnabled: true,
         message: "IA falhou - usando ordem cronológica",
-        reasoning: "Erro ao processar sugestão da IA"
+        reasoning: "Erro ao processar sugestão da IA",
       });
     }
 
     // 6. Reorganiza pedidos conforme IA sugeriu
     const orderMap = {};
-    orders.forEach(o => {
+    orders.forEach((o) => {
       orderMap[o.id] = o;
     });
 
     const optimizedOrders = aiSuggestion.priorityOrder
-      .map(orderId => orderMap[orderId])
-      .filter(o => o !== undefined) // Remove IDs inválidos
-      .map(o => ({ ...o, items: parseJSON(o.items) }));
+      .map((orderId) => orderMap[orderId])
+      .filter((o) => o !== undefined) // Remove IDs inválidos
+      .map((o) => ({ ...o, items: parseJSON(o.items) }));
 
-    console.log(`✅ Ordem otimizada pela IA: ${optimizedOrders.map(o => o.id).join(', ')}`);
+    console.log(
+      `✅ Ordem otimizada pela IA: ${optimizedOrders
+        .map((o) => o.id)
+        .join(", ")}`
+    );
 
     // Salva no cache
     kitchenCache = {
@@ -1859,33 +2193,32 @@ Retorne APENAS o JSON, sem texto adicional.`
       reasoning: aiSuggestion.reasoning || "Ordem otimizada pela IA",
       aiEnabled: true,
       lastOrderIds: currentOrderIds,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
 
     res.json({
       orders: optimizedOrders,
       aiEnabled: true,
       reasoning: aiSuggestion.reasoning || "Ordem otimizada pela IA",
-      originalOrder: orders.map(o => o.id),
-      optimizedOrder: optimizedOrders.map(o => o.id),
-      cached: false
+      originalOrder: orders.map((o) => o.id),
+      optimizedOrder: optimizedOrders.map((o) => o.id),
+      cached: false,
     });
-
   } catch (e) {
     console.error("❌ ERRO na otimização de cozinha:", e.message);
-    
+
     // Fallback: retorna ordem cronológica
     try {
       const orders = await db("orders")
         .where({ status: "active" })
         .orderBy("timestamp", "asc")
         .select("*");
-      
-      res.json({ 
-        orders: orders.map(o => ({ ...o, items: parseJSON(o.items) })),
+
+      res.json({
+        orders: orders.map((o) => ({ ...o, items: parseJSON(o.items) })),
         aiEnabled: false,
         message: "Erro na IA - usando ordem cronológica",
-        error: e.message
+        error: e.message,
       });
     } catch (dbError) {
       res.status(500).json({ error: "Erro ao buscar pedidos" });
@@ -1895,82 +2228,91 @@ Retorne APENAS o JSON, sem texto adicional.`
 
 // --- ANÁLISE INTELIGENTE DE ESTOQUE E VENDAS (Admin) ---
 
-app.get("/api/ai/inventory-analysis", async (req, res) => {
-  if (!openai) {
-    return res.status(503).json({ error: "IA indisponível no momento" });
-  }
+app.get(
+  "/api/ai/inventory-analysis",
+  authenticateToken,
+  authorizeAdmin,
+  async (req, res) => {
+    if (!openai) {
+      return res.status(503).json({ error: "IA indisponível no momento" });
+    }
 
-  try {
-    console.log("🤖 Iniciando análise inteligente de estoque...");
+    try {
+      console.log("🤖 Iniciando análise inteligente de estoque...");
 
-    // 1. Buscar todos os produtos com estoque
-    const products = await db("products").select("*").orderBy("category");
+      // 1. Buscar todos os produtos com estoque
+      const products = await db("products").select("*").orderBy("category");
 
-    // 2. Buscar histórico de pedidos (últimos 30 dias)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const orders = await db("orders")
-      .where("timestamp", ">=", thirtyDaysAgo.toISOString())
-      .select("*");
+      // 2. Buscar histórico de pedidos (últimos 30 dias)
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const orders = await db("orders")
+        .where("timestamp", ">=", thirtyDaysAgo.toISOString())
+        .select("*");
 
-    // 3. Calcular estatísticas de vendas por produto
-    const salesStats = {};
-    products.forEach(p => {
-      salesStats[p.id] = {
-        name: p.name,
-        category: p.category,
-        price: parseFloat(p.price),
-        stock: p.stock,
-        totalSold: 0,
-        revenue: 0,
-        orderCount: 0
-      };
-    });
-
-    // Contar vendas
-    orders.forEach(order => {
-      const items = parseJSON(order.items);
-      items.forEach(item => {
-        if (salesStats[item.id]) {
-          salesStats[item.id].totalSold += item.quantity || 1;
-          salesStats[item.id].revenue += (item.price || 0) * (item.quantity || 1);
-          salesStats[item.id].orderCount += 1;
-        }
+      // 3. Calcular estatísticas de vendas por produto
+      const salesStats = {};
+      products.forEach((p) => {
+        salesStats[p.id] = {
+          name: p.name,
+          category: p.category,
+          price: parseFloat(p.price),
+          stock: p.stock,
+          totalSold: 0,
+          revenue: 0,
+          orderCount: 0,
+        };
       });
-    });
 
-    // 4. Preparar dados para análise da IA
-    const analysisData = {
-      totalProducts: products.length,
-      totalOrders: orders.length,
-      period: "últimos 30 dias",
-      products: Object.values(salesStats).map(p => ({
-        name: p.name,
-        category: p.category,
-        price: p.price,
-        stock: p.stock === null ? "ilimitado" : p.stock,
-        totalSold: p.totalSold,
-        revenue: p.revenue.toFixed(2),
-        averagePerOrder: p.orderCount > 0 ? (p.totalSold / p.orderCount).toFixed(1) : 0
-      }))
-    };
+      // Contar vendas
+      orders.forEach((order) => {
+        const items = parseJSON(order.items);
+        items.forEach((item) => {
+          if (salesStats[item.id]) {
+            salesStats[item.id].totalSold += item.quantity || 1;
+            salesStats[item.id].revenue +=
+              (item.price || 0) * (item.quantity || 1);
+            salesStats[item.id].orderCount += 1;
+          }
+        });
+      });
 
-    // 5. Prompt estruturado para a IA
-    const prompt = `Você é um consultor de negócios especializado em food service. Analise os dados de uma pastelaria:
+      // 4. Preparar dados para análise da IA
+      const analysisData = {
+        totalProducts: products.length,
+        totalOrders: orders.length,
+        period: "últimos 30 dias",
+        products: Object.values(salesStats).map((p) => ({
+          name: p.name,
+          category: p.category,
+          price: p.price,
+          stock: p.stock === null ? "ilimitado" : p.stock,
+          totalSold: p.totalSold,
+          revenue: p.revenue.toFixed(2),
+          averagePerOrder:
+            p.orderCount > 0 ? (p.totalSold / p.orderCount).toFixed(1) : 0,
+        })),
+      };
+
+      // 5. Prompt estruturado para a IA
+      const prompt = `Você é um consultor de negócios especializado em food service. Analise os dados de uma pastelaria:
 
 📊 DADOS DE VENDAS (${analysisData.period}):
 - Total de produtos no catálogo: ${analysisData.totalProducts}
 - Total de pedidos realizados: ${analysisData.totalOrders}
 
 PRODUTOS E DESEMPENHO:
-${analysisData.products.map(p => 
-  `• ${p.name} (${p.category}):
+${analysisData.products
+  .map(
+    (p) =>
+      `• ${p.name} (${p.category}):
     - Preço: R$ ${p.price}
     - Estoque atual: ${p.stock}
     - Vendas: ${p.totalSold} unidades
     - Receita: R$ ${p.revenue}
     - Média por pedido: ${p.averagePerOrder}`
-).join('\n')}
+  )
+  .join("\n")}
 
 Por favor, forneça uma análise completa e acionável sobre:
 
@@ -1986,56 +2328,62 @@ Por favor, forneça uma análise completa e acionável sobre:
 
 Seja direto, prático e use emojis. Priorize ações que o administrador pode tomar HOJE.`;
 
-    console.log("📤 Enviando dados para análise da IA...");
+      console.log("📤 Enviando dados para análise da IA...");
 
-    // 6. Chamar OpenAI
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { 
-          role: "system", 
-          content: "Você é um consultor de negócios especializado em análise de vendas e gestão de estoque para restaurantes e food service. Seja prático, direto e focado em ações." 
+      // 6. Chamar OpenAI
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "Você é um consultor de negócios especializado em análise de vendas e gestão de estoque para restaurantes e food service. Seja prático, direto e focado em ações.",
+          },
+          { role: "user", content: prompt },
+        ],
+        max_tokens: 1500,
+        temperature: 0.7,
+      });
+
+      const analysis = completion.choices[0].message.content;
+
+      console.log("✅ Análise concluída!");
+
+      // 7. Retornar análise + dados brutos
+      res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        period: analysisData.period,
+        summary: {
+          totalProducts: analysisData.totalProducts,
+          totalOrders: analysisData.totalOrders,
+          lowStock: products.filter((p) => p.stock !== null && p.stock <= 5)
+            .length,
+          outOfStock: products.filter((p) => p.stock === 0).length,
         },
-        { role: "user", content: prompt }
-      ],
-      max_tokens: 1500,
-      temperature: 0.7
-    });
-
-    const analysis = completion.choices[0].message.content;
-
-    console.log("✅ Análise concluída!");
-
-    // 7. Retornar análise + dados brutos
-    res.json({
-      success: true,
-      timestamp: new Date().toISOString(),
-      period: analysisData.period,
-      summary: {
-        totalProducts: analysisData.totalProducts,
-        totalOrders: analysisData.totalOrders,
-        lowStock: products.filter(p => p.stock !== null && p.stock <= 5).length,
-        outOfStock: products.filter(p => p.stock === 0).length
-      },
-      analysis: analysis,
-      rawData: salesStats // Para o frontend criar gráficos se quiser
-    });
-
-  } catch (error) {
-    console.error("❌ Erro na análise de estoque:", error);
-    res.status(500).json({ 
-      error: "Erro ao processar análise",
-      message: error.message 
-    });
+        analysis: analysis,
+        rawData: salesStats, // Para o frontend criar gráficos se quiser
+      });
+    } catch (error) {
+      console.error("❌ Erro na análise de estoque:", error);
+      res.status(500).json({
+        error: "Erro ao processar análise",
+        message: error.message,
+      });
+    }
   }
-});
+);
 
 // --- Inicialização ---
 console.log("🚀 Iniciando servidor...");
-initDatabase()
+Promise.all([initDatabase(), initRedis()])
   .then(() => {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`✅ Servidor rodando na porta ${PORT}`);
+      console.log(
+        `🔐 JWT: ${JWT_SECRET ? "Configurado" : "⚠️ NÃO CONFIGURADO"}`
+      );
+      console.log(`💾 Cache: ${useRedis ? "Redis" : "Map em memória"}`);
     });
   })
   .catch((err) => {
