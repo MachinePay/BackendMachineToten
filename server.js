@@ -137,7 +137,21 @@ const deleteCachedPayment = async (key) => {
   confirmedPayments.delete(key);
 };
 
+// ⚠️ CRON JOBS MOVIDOS PARA WORKER SEPARADO
+// Ver: workers/cronJobs.js (node-cron) ou workers/bullQueue.js (Bull + Redis)
+//
+// Benefícios:
+// - ✅ Não bloqueia o servidor HTTP
+// - ✅ Pode ser escalado independentemente
+// - ✅ Reinicia automaticamente em caso de erro
+// - ✅ Logs isolados e estruturados
+//
+// Para iniciar o worker:
+// - Desenvolvimento: npm run worker
+// - Produção: pm2 start workers/cronJobs.js --name worker-cron
+
 // Função para limpar cache antigo (a cada 1 hora) - apenas para Map (Redis tem TTL automático)
+// Este permanece no servidor principal pois precisa acessar o Map em memória
 setInterval(() => {
   if (!useRedis) {
     const oneHourAgo = Date.now() - 3600000;
@@ -148,114 +162,6 @@ setInterval(() => {
     }
   }
 }, 3600000);
-
-// Função para limpar intents antigas da Point Pro 2 (a cada 2 minutos)
-// Evita que pagamentos antigos fiquem travando a maquininha
-setInterval(async () => {
-  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) return;
-
-  try {
-    const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
-    const response = await fetch(listUrl, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const events = data.events || [];
-
-      if (events.length > 0) {
-        console.log(
-          `🧹 [Auto-cleanup] Encontradas ${events.length} intent(s) pendentes na Point Pro 2`
-        );
-
-        for (const ev of events) {
-          const iId = ev.payment_intent_id || ev.id;
-          const state = ev.state;
-
-          // Remove intents antigas (mais de 10 minutos) ou já finalizadas
-          const shouldClean =
-            state === "FINISHED" || state === "CANCELED" || state === "ERROR";
-
-          if (shouldClean) {
-            try {
-              await fetch(`${listUrl}/${iId}`, {
-                method: "DELETE",
-                headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-              });
-              console.log(
-                `  ✅ Intent ${iId} (${state}) removida automaticamente`
-              );
-            } catch (e) {
-              console.log(`  ⚠️ Erro ao remover ${iId}: ${e.message}`);
-            }
-          }
-        }
-
-        console.log(`✅ [Auto-cleanup] Point Pro 2 verificada e limpa`);
-      }
-    }
-  } catch (error) {
-    // Silencioso - não precisa logar erro de cleanup em background
-  }
-}, 120000); // A cada 2 minutos
-
-// 🧹 CRON: Libera estoque de pedidos pendentes expirados (>30 min)
-setInterval(async () => {
-  try {
-    const thirtyMinutesAgo = new Date(
-      Date.now() - 30 * 60 * 1000
-    ).toISOString();
-
-    // Busca pedidos pendentes antigos
-    const expiredOrders = await db("orders")
-      .where({ paymentStatus: "pending" })
-      .where("timestamp", "<", thirtyMinutesAgo)
-      .select("*");
-
-    if (expiredOrders.length > 0) {
-      console.log(
-        `🧹 [CRON] ${expiredOrders.length} pedido(s) expirado(s) encontrado(s)`
-      );
-
-      for (const order of expiredOrders) {
-        const items = parseJSON(order.items);
-
-        // Libera estoque reservado
-        for (const item of items) {
-          const product = await db("products").where({ id: item.id }).first();
-
-          if (product && product.stock !== null && product.stock_reserved > 0) {
-            const newReserved = Math.max(
-              0,
-              product.stock_reserved - item.quantity
-            );
-
-            await db("products")
-              .where({ id: item.id })
-              .update({ stock_reserved: newReserved });
-
-            console.log(
-              `  ↩️ ${item.name}: liberando ${item.quantity} unidade(s) (reserva: ${product.stock_reserved} → ${newReserved})`
-            );
-          }
-        }
-
-        // Marca pedido como expirado
-        await db("orders").where({ id: order.id }).update({
-          status: "expired",
-          paymentStatus: "expired",
-        });
-
-        console.log(`  ❌ Pedido ${order.id} marcado como expirado`);
-      }
-
-      console.log(`✅ [CRON] Estoque liberado com sucesso`);
-    }
-  } catch (error) {
-    console.error("❌ [CRON] Erro ao liberar estoque:", error.message);
-  }
-}, 600000); // A cada 10 minutos
 
 // --- Inicialização do Banco (SEED) ---
 async function initDatabase() {
