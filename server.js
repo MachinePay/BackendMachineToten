@@ -666,9 +666,14 @@ app.get(
   authorizeKitchen,
   async (req, res) => {
     try {
+      // 🔒 IMPORTANTE: Só retorna pedidos com status "active" E pagamento confirmado
       const orders = await db("orders")
         .where({ status: "active" })
+        .whereIn("paymentStatus", ["paid", "authorized"])
         .orderBy("timestamp", "asc");
+
+      console.log(`🍳 Cozinha: ${orders.length} pedido(s) PAGOS na fila`);
+
       res.json(
         orders.map((o) => ({
           ...o,
@@ -693,8 +698,9 @@ app.post("/api/orders", async (req, res) => {
     items: JSON.stringify(items || []),
     total: total || 0,
     timestamp: new Date().toISOString(),
-    status: "active",
-    paymentStatus: paymentId ? "paid" : "pending", // pending se ainda não tem paymentId
+    // 🔒 IMPORTANTE: Pedido só vai para cozinha (active) após pagamento confirmado
+    status: paymentId ? "active" : "pending_payment",
+    paymentStatus: paymentId ? "paid" : "pending",
     paymentId: paymentId || null,
   };
 
@@ -785,6 +791,12 @@ app.put("/api/orders/:id", async (req, res) => {
     const updates = {};
     if (paymentId) updates.paymentId = paymentId;
     if (paymentStatus) updates.paymentStatus = paymentStatus;
+
+    // 🎯 Se pagamento aprovado, libera pedido para cozinha
+    if (paymentStatus === "paid" && order.status === "pending_payment") {
+      updates.status = "active";
+      console.log(`🍳 Pedido ${id} liberado para COZINHA!`);
+    }
 
     // Se pagamento foi aprovado, CONFIRMA a dedução do estoque
     if (paymentStatus === "paid" && order.paymentStatus === "pending") {
