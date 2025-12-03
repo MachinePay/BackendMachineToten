@@ -193,3 +193,5 @@ app.put("/api/orders/:id", async (req, res) => {
 - **Estoque é descontado IMEDIATAMENTE** ao criar o pedido (passo 2)
 - Se o pagamento falhar, o estoque já foi descontado (comportamento intencional - evita venda duplicada)
 - Se quiser reverter estoque em caso de falha, adicione lógica de rollback
+
+#atualizado
