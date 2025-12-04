@@ -874,7 +874,7 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
         `💳 Pagamento ${id} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`
       );
 
-      // Se aprovado, adiciona ao cache E DESCONTA DO ESTOQUE
+      // Processa status do pagamento
       if (payment.status === "approved" || payment.status === "authorized") {
         const amountInCents = Math.round(payment.transaction_amount * 100);
         const cacheKey = `amount_${amountInCents}`;
@@ -896,6 +896,29 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
         );
         console.log(
           `ℹ️ Estoque já foi descontado no momento da criação do pedido (/api/orders)`
+        );
+      } else if (
+        payment.status === "rejected" ||
+        payment.status === "cancelled" ||
+        payment.status === "refunded"
+      ) {
+        console.log(
+          `❌ Pagamento ${id} REJEITADO/CANCELADO via IPN! Status: ${payment.status}`
+        );
+        console.log(
+          `ℹ️ External reference: ${
+            payment.external_reference || "não informado"
+          }`
+        );
+
+        // Remove do cache se existir
+        const amountInCents = Math.round(payment.transaction_amount * 100);
+        const cacheKey = `amount_${amountInCents}`;
+        paymentCache.delete(cacheKey);
+        console.log(`🧹 Cache limpo para ${cacheKey}`);
+      } else {
+        console.log(
+          `⏳ Pagamento ${id} com status: ${payment.status} - aguardando confirmação`
         );
       }
     } else {
@@ -953,7 +976,7 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
         `💳 Pagamento ${paymentId} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`
       );
 
-      // Se aprovado, adiciona ao cache E DESCONTA DO ESTOQUE
+      // Processa status do pagamento
       if (payment.status === "approved" || payment.status === "authorized") {
         const amountInCents = Math.round(payment.transaction_amount * 100);
         const cacheKey = `amount_${amountInCents}`;
@@ -1016,6 +1039,29 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
             console.error(`❌ Erro ao descontar estoque: ${err.message}`);
           }
         }
+      } else if (
+        payment.status === "rejected" ||
+        payment.status === "cancelled" ||
+        payment.status === "refunded"
+      ) {
+        console.log(
+          `❌ Pagamento ${paymentId} REJEITADO/CANCELADO via Webhook! Status: ${payment.status}`
+        );
+        console.log(
+          `ℹ️ External reference: ${
+            payment.external_reference || "não informado"
+          }`
+        );
+
+        // Remove do cache se existir
+        const amountInCents = Math.round(payment.transaction_amount * 100);
+        const cacheKey = `amount_${amountInCents}`;
+        paymentCache.delete(cacheKey);
+        console.log(`🧹 Cache limpo para ${cacheKey}`);
+      } else {
+        console.log(
+          `⏳ Pagamento ${paymentId} com status: ${payment.status} - aguardando confirmação`
+        );
       }
     }
   } catch (error) {
@@ -1396,23 +1442,123 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
                 paymentStatus: paymentDetails.status,
               });
             }
+
+            // Verifica se foi rejeitado/cancelado
+            if (
+              paymentDetails.status === "rejected" ||
+              paymentDetails.status === "cancelled" ||
+              paymentDetails.status === "refunded"
+            ) {
+              console.log(
+                `❌ PAGAMENTO REJEITADO/CANCELADO: ${paymentDetails.status}`
+              );
+
+              // Busca external_reference para liberar pedido
+              const orderId = intent.additional_info?.external_reference;
+
+              return res.json({
+                status: "rejected",
+                paymentId: realPaymentId,
+                paymentStatus: paymentDetails.status,
+                reason: "rejected_by_terminal",
+                orderId: orderId || null,
+              });
+            }
+
+            // Outros status (pending, in_process, etc)
+            console.log(`⏳ PAGAMENTO PENDENTE: ${paymentDetails.status}`);
+            return res.json({
+              status: "pending",
+              paymentId: realPaymentId,
+              paymentStatus: paymentDetails.status,
+            });
           }
         } catch (e) {
           console.log(`⚠️ Erro ao buscar detalhes do pagamento: ${e.message}`);
         }
 
-        // Fallback: se não conseguiu buscar detalhes, retorna como aprovado mesmo assim
-        return res.json({ status: "approved", paymentId: realPaymentId });
+        // Fallback: se não conseguiu buscar detalhes, retorna pending (não approved!)
+        console.log(
+          `⚠️ Fallback: não foi possível confirmar status do pagamento ${realPaymentId}`
+        );
+        return res.json({ status: "pending", paymentId: realPaymentId });
       }
 
-      // Estados finalizados
+      // Estados finalizados - NÃO assume approved automaticamente!
+      // FINISHED pode ser rejected, cancelled, refunded, etc
       if (intent.state === "FINISHED") {
-        console.log(`✅ Intent FINISHED - aprovado`);
-        return res.json({ status: "approved", paymentId: paymentId });
+        console.log(
+          `⚠️ Intent FINISHED mas sem payment.id - precisa verificar manualmente`
+        );
+
+        // Tenta buscar pelo external_reference se houver
+        if (intent.additional_info?.external_reference) {
+          const orderId = intent.additional_info.external_reference;
+          console.log(
+            `🔍 Tentando buscar pagamento por external_reference: ${orderId}`
+          );
+
+          try {
+            const searchUrl = `https://api.mercadopago.com/v1/payments/search?external_reference=${orderId}`;
+            const searchResp = await fetch(searchUrl, {
+              headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+            });
+
+            if (searchResp.ok) {
+              const searchData = await searchResp.json();
+              if (searchData.results && searchData.results.length > 0) {
+                const payment = searchData.results[0];
+                console.log(
+                  `💳 Pagamento encontrado via search: ${payment.id} | Status: ${payment.status}`
+                );
+
+                if (
+                  payment.status === "approved" ||
+                  payment.status === "authorized"
+                ) {
+                  return res.json({
+                    status: "approved",
+                    paymentId: payment.id,
+                  });
+                } else if (
+                  payment.status === "rejected" ||
+                  payment.status === "cancelled" ||
+                  payment.status === "refunded"
+                ) {
+                  return res.json({
+                    status: "rejected",
+                    paymentId: payment.id,
+                  });
+                } else {
+                  return res.json({ status: "pending", paymentId: payment.id });
+                }
+              }
+            }
+          } catch (searchError) {
+            console.log(
+              `⚠️ Erro ao buscar por external_reference: ${searchError.message}`
+            );
+          }
+        }
+
+        // Se não encontrou nada, retorna pending (não approved!)
+        console.log(
+          `⚠️ Intent FINISHED mas status do pagamento desconhecido - retornando pending`
+        );
+        return res.json({ status: "pending", paymentId: paymentId });
       }
 
       if (intent.state === "CANCELED" || intent.state === "ERROR") {
-        console.log(`❌ Intent ${intent.state}`);
+        const isCanceled = intent.state === "CANCELED";
+        const isError = intent.state === "ERROR";
+
+        console.log(
+          `❌ Intent ${intent.state}${
+            isCanceled
+              ? " (cancelado pelo usuário na maquininha)"
+              : " (erro no processamento)"
+          }`
+        );
 
         // --- LÓGICA DE CANCELAMENTO DO PEDIDO NO BANCO ---
         const orderId = intent.additional_info?.external_reference;
@@ -1469,7 +1615,14 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
         }
         // --- FIM DA LÓGICA ---
 
-        return res.json({ status: "canceled" });
+        return res.json({
+          status: "canceled",
+          reason: isCanceled ? "canceled_by_user" : "payment_error",
+          orderId: orderId || null,
+          message: isCanceled
+            ? "Pagamento cancelado na maquininha pelo usuário"
+            : "Erro ao processar pagamento na maquininha",
+        });
       }
 
       // Ainda pendente
@@ -1496,7 +1649,15 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
         payment.status === "rejected"
       ) {
         console.log(`❌ Payment ${payment.status.toUpperCase()}`);
-        return res.json({ status: "canceled" });
+        return res.json({
+          status: "canceled",
+          reason: "canceled_by_system",
+          paymentStatus: payment.status,
+          message:
+            payment.status === "cancelled"
+              ? "Pagamento PIX cancelado"
+              : "Pagamento PIX rejeitado",
+        });
       }
 
       console.log(`⏳ Payment ainda pendente (${payment.status})`);
