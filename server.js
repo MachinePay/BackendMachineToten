@@ -533,12 +533,92 @@ app.delete(
   }
 );
 
+// Buscar usuário por CPF
+app.get("/api/users/cpf/:cpf", async (req, res) => {
+  try {
+    const cpfClean = String(req.params.cpf).replace(/\D/g, "");
+    
+    if (cpfClean.length !== 11) {
+      return res.status(400).json({ error: "CPF inválido" });
+    }
+    
+    const user = await db("users").where({ cpf: cpfClean }).first();
+    
+    if (!user) {
+      return res.status(404).json({ error: "Usuário não encontrado" });
+    }
+    
+    res.json({
+      ...user,
+      historico: parseJSON(user.historico)
+    });
+  } catch (e) {
+    console.error("Erro ao buscar usuário por CPF:", e);
+    res.status(500).json({ error: "Erro ao buscar usuário" });
+  }
+});
+
 app.get("/api/users", authenticateToken, authorizeAdmin, async (req, res) => {
   try {
     const users = await db("users").select("*");
     res.json(users.map((u) => ({ ...u, historico: parseJSON(u.historico) })));
   } catch (e) {
     res.status(500).json({ error: "Erro ao buscar usuários" });
+  }
+});
+
+// Login/Registro com CPF (retorna usuário existente ou cria novo)
+app.post("/api/users/login-cpf", async (req, res) => {
+  const { cpf, name } = req.body;
+  
+  if (!cpf) {
+    return res.status(400).json({ error: "CPF obrigatório" });
+  }
+  
+  const cpfClean = String(cpf).replace(/\D/g, "");
+  
+  if (cpfClean.length !== 11) {
+    return res.status(400).json({ error: "CPF inválido" });
+  }
+
+  try {
+    // Busca usuário existente
+    let user = await db("users").where({ cpf: cpfClean }).first();
+    
+    if (user) {
+      console.log(`✅ Login CPF: Usuário existente encontrado - ${user.name} (${cpfClean})`);
+      return res.json({
+        ...user,
+        historico: parseJSON(user.historico),
+        isNewUser: false
+      });
+    }
+    
+    // Cria novo usuário
+    console.log(`📝 Login CPF: Criando novo usuário - ${name || 'Sem Nome'} (${cpfClean})`);
+    
+    const newUser = {
+      id: `user_${Date.now()}`,
+      name: name || "Cliente",
+      email: null,
+      cpf: cpfClean,
+      historico: JSON.stringify([]),
+      pontos: 0,
+    };
+    
+    await db("users").insert(newUser);
+    
+    console.log(`✅ Novo usuário criado: ${newUser.id}`);
+    
+    res.status(201).json({
+      ...newUser,
+      historico: [],
+      isNewUser: true
+    });
+    
+  } catch (e) {
+    console.error("❌ Erro no login por CPF:", e);
+    res.status(500).json({ error: "Erro ao processar login" });
   }
 });
 
