@@ -537,20 +537,20 @@ app.delete(
 app.get("/api/users/cpf/:cpf", async (req, res) => {
   try {
     const cpfClean = String(req.params.cpf).replace(/\D/g, "");
-    
+
     if (cpfClean.length !== 11) {
       return res.status(400).json({ error: "CPF inválido" });
     }
-    
+
     const user = await db("users").where({ cpf: cpfClean }).first();
-    
+
     if (!user) {
       return res.status(404).json({ error: "Usuário não encontrado" });
     }
-    
+
     res.json({
       ...user,
-      historico: parseJSON(user.historico)
+      historico: parseJSON(user.historico),
     });
   } catch (e) {
     console.error("Erro ao buscar usuário por CPF:", e);
@@ -570,13 +570,13 @@ app.get("/api/users", authenticateToken, authorizeAdmin, async (req, res) => {
 // Login/Registro com CPF (retorna usuário existente ou cria novo)
 app.post("/api/users/login-cpf", async (req, res) => {
   const { cpf, name } = req.body;
-  
+
   if (!cpf) {
     return res.status(400).json({ error: "CPF obrigatório" });
   }
-  
+
   const cpfClean = String(cpf).replace(/\D/g, "");
-  
+
   if (cpfClean.length !== 11) {
     return res.status(400).json({ error: "CPF inválido" });
   }
@@ -584,19 +584,23 @@ app.post("/api/users/login-cpf", async (req, res) => {
   try {
     // Busca usuário existente
     let user = await db("users").where({ cpf: cpfClean }).first();
-    
+
     if (user) {
-      console.log(`✅ Login CPF: Usuário existente encontrado - ${user.name} (${cpfClean})`);
+      console.log(
+        `✅ Login CPF: Usuário existente encontrado - ${user.name} (${cpfClean})`
+      );
       return res.json({
         ...user,
         historico: parseJSON(user.historico),
-        isNewUser: false
+        isNewUser: false,
       });
     }
-    
+
     // Cria novo usuário
-    console.log(`📝 Login CPF: Criando novo usuário - ${name || 'Sem Nome'} (${cpfClean})`);
-    
+    console.log(
+      `📝 Login CPF: Criando novo usuário - ${name || "Sem Nome"} (${cpfClean})`
+    );
+
     const newUser = {
       id: `user_${Date.now()}`,
       name: name || "Cliente",
@@ -605,17 +609,16 @@ app.post("/api/users/login-cpf", async (req, res) => {
       historico: JSON.stringify([]),
       pontos: 0,
     };
-    
+
     await db("users").insert(newUser);
-    
+
     console.log(`✅ Novo usuário criado: ${newUser.id}`);
-    
+
     res.status(201).json({
       ...newUser,
       historico: [],
-      isNewUser: true
+      isNewUser: true,
     });
-    
   } catch (e) {
     console.error("❌ Erro no login por CPF:", e);
     res.status(500).json({ error: "Erro ao processar login" });
@@ -630,13 +633,15 @@ app.post("/api/users", async (req, res) => {
   try {
     // Verifica se usuário já existe
     const exists = await db("users").where({ cpf: cpfClean }).first();
-    
+
     if (exists) {
-      console.log(`ℹ️ CPF ${cpfClean} já cadastrado - retornando usuário existente`);
+      console.log(
+        `ℹ️ CPF ${cpfClean} já cadastrado - retornando usuário existente`
+      );
       return res.json({
         ...exists,
         historico: parseJSON(exists.historico),
-        message: "Usuário já existe - login realizado"
+        message: "Usuário já existe - login realizado",
       });
     }
 
@@ -2192,10 +2197,11 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
   }
 
   try {
-    // 1. Busca pedidos ativos (não finalizados)
+    // 1. Busca pedidos ativos (não finalizados) - ORDENADOS DO MAIS ANTIGO PARA O MAIS RECENTE
+    // Esta é a ordem BASE (FIFO) que a IA deve respeitar ao otimizar
     const orders = await db("orders")
       .where({ status: "active" })
-      .orderBy("timestamp", "asc")
+      .orderBy("timestamp", "asc") // ASC = Mais antigo primeiro (CORRETO!)
       .select("*");
 
     if (orders.length === 0) {
@@ -2293,12 +2299,30 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
           role: "system",
           content: `Você é um assistente de cozinha especializado em otimizar a ordem de preparo de pedidos.
 
-REGRAS DE PRIORIZAÇÃO:
-1. Pedidos pequenos e rápidos (1-2 itens frios) devem ser priorizados se houverem pedidos grandes na frente
-2. Pedidos com muito tempo de espera (>5 min) não devem ser muito atrasados
-3. Agrupe pedidos que usam os mesmos equipamentos (ex: fritadeira)
-4. Bebidas/sucos podem ser feitos rapidamente entre pedidos grandes
-5. Considere eficiência: fazer 3 pedidos pequenos pode ser mais rápido que 1 grande
+⚠️ REGRA FUNDAMENTAL (INEGOCIÁVEL):
+Pedido mais antigo (maior tempo de espera) DEVE aparecer PRIMEIRO na fila. SEMPRE!
+
+REGRAS DE PRIORIZAÇÃO (EM ORDEM DE IMPORTÂNCIA):
+1. ⏰ TEMPO DE ESPERA É PRIORIDADE MÁXIMA: Pedidos mais antigos (aguardando há mais tempo) DEVEM vir PRIMEIRO na fila
+2. 🚨 Pedidos com >10 minutos de espera são CRÍTICOS e NÃO podem ser ultrapassados por nenhum outro
+3. 🎯 Pedidos com >5 minutos esperando SÃO PRIORITÁRIOS e devem estar no topo da fila
+4. ⚖️ JUSTIÇA: Ordem cronológica (FIFO - First In, First Out) tem prioridade ALTA sobre eficiência
+5. ⚡ EXCEÇÃO LIMITADA: Apenas pedidos MUITO rápidos (1 única bebida/suco) podem ser adiantados em 1-2 posições
+6. 🔥 Agrupe pedidos similares APENAS se tiverem tempo de espera semelhante (diferença <3 min)
+
+LÓGICA DE ORDENAÇÃO RIGOROSA:
+- Ordene SEMPRE do mais antigo (mais minutos esperando) para o mais recente
+- O pedido #1 da lista (mais antigo) NUNCA pode sair da posição 1, exceto por bebida única
+- Um pedido pode avançar APENAS 1-2 posições, NUNCA vai para o fim da fila
+- Só faça micro-ajustes se ganhar eficiência SEM prejudicar quem está esperando há mais tempo
+- Um pedido de 15 minutos NUNCA deve ficar atrás de um de 5 minutos
+- Um pedido de 8 minutos NUNCA deve ficar atrás de um de 2 minutos
+- Respeite a ordem de chegada (FIFO) como BASE ABSOLUTA
+
+LIMITE DE REORDENAÇÃO:
+- Pedido pode subir no máximo 2 posições (ex: #5 pode ir para #3, mas não para #1)
+- Pedido NUNCA pode descer mais de 2 posições (ex: #2 pode ir para #4, mas não para #7)
+- Se não houver ganho claro de eficiência, MANTENHA a ordem original
 
 RESPONDA NO FORMATO JSON:
 {
@@ -2310,11 +2334,11 @@ Retorne APENAS o JSON, sem texto adicional.`,
         },
         {
           role: "user",
-          content: `Otimize a ordem de preparo destes pedidos:\n\n${ordersText}`,
+          content: `Otimize a ordem de preparo destes pedidos (ORDENADOS DO MAIS ANTIGO PARA O MAIS RECENTE):\n\n${ordersText}\n\nLEMBRETE: Priorize SEMPRE os pedidos com mais tempo de espera! O primeiro da lista está esperando há mais tempo.`,
         },
       ],
       max_tokens: 500,
-      temperature: 0.7,
+      temperature: 0.3,
     });
 
     const aiResponse = completion.choices[0].message.content.trim();
@@ -2350,10 +2374,36 @@ Retorne APENAS o JSON, sem texto adicional.`,
       .filter((o) => o !== undefined) // Remove IDs inválidos
       .map((o) => ({ ...o, items: parseJSON(o.items) }));
 
+    // 7. VALIDAÇÃO: Garante que pedidos antigos não foram muito atrasados pela IA
+    const originalOldest = orders[0]; // Pedido mais antigo (deveria ser o primeiro)
+    const optimizedOldestIndex = optimizedOrders.findIndex(
+      (o) => o.id === originalOldest?.id
+    );
+
+    // Se o pedido mais antigo foi movido para posição >2, REVERTE para ordem cronológica
+    if (optimizedOldestIndex > 2) {
+      console.log(
+        `⚠️ IA moveu pedido mais antigo (${originalOldest.id}) para posição ${
+          optimizedOldestIndex + 1
+        } - REVERTENDO para ordem cronológica`
+      );
+      return res.json({
+        orders: orders.map((o) => ({ ...o, items: parseJSON(o.items) })),
+        aiEnabled: false,
+        message: "IA tentou atrasar pedido antigo - usando ordem cronológica",
+        reasoning: "Segurança: Pedido mais antigo não pode ser muito atrasado",
+      });
+    }
+
     console.log(
       `✅ Ordem otimizada pela IA: ${optimizedOrders
         .map((o) => o.id)
         .join(", ")}`
+    );
+    console.log(
+      `✅ Validação: Pedido mais antigo (${
+        originalOldest?.id
+      }) está na posição ${optimizedOldestIndex + 1}`
     );
 
     // Salva no cache
