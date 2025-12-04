@@ -628,9 +628,19 @@ app.post("/api/users", async (req, res) => {
   const cpfClean = String(cpf).replace(/\D/g, "");
 
   try {
+    // Verifica se usuário já existe
     const exists = await db("users").where({ cpf: cpfClean }).first();
-    if (exists) return res.status(409).json({ error: "CPF já cadastrado" });
+    
+    if (exists) {
+      console.log(`ℹ️ CPF ${cpfClean} já cadastrado - retornando usuário existente`);
+      return res.json({
+        ...exists,
+        historico: parseJSON(exists.historico),
+        message: "Usuário já existe - login realizado"
+      });
+    }
 
+    // Cria novo usuário
     const newUser = {
       id: id || `user_${Date.now()}`,
       name: name || "Sem Nome",
