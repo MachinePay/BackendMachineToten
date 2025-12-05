@@ -250,26 +250,38 @@ async function initDatabase() {
 
   // ========== MULTI-TENANCY: Adiciona store_id nas tabelas ==========
 
+  console.log("🔍 [MULTI-TENANCY] Verificando coluna store_id em products...");
+
   // Adiciona store_id na tabela products
   const hasProductStoreId = await db.schema.hasColumn("products", "store_id");
   if (!hasProductStoreId) {
+    console.log(
+      "⏳ [MULTI-TENANCY] Adicionando coluna store_id em products..."
+    );
     await db.schema.table("products", (table) => {
       table.string("store_id").index(); // Indexado para performance
     });
     console.log(
       "✅ [MULTI-TENANCY] Coluna 'store_id' adicionada à tabela products"
     );
+  } else {
+    console.log("✅ [MULTI-TENANCY] Coluna 'store_id' já existe em products");
   }
+
+  console.log("🔍 [MULTI-TENANCY] Verificando coluna store_id em orders...");
 
   // Adiciona store_id na tabela orders
   const hasOrderStoreId = await db.schema.hasColumn("orders", "store_id");
   if (!hasOrderStoreId) {
+    console.log("⏳ [MULTI-TENANCY] Adicionando coluna store_id em orders...");
     await db.schema.table("orders", (table) => {
       table.string("store_id").index(); // Indexado para performance
     });
     console.log(
       "✅ [MULTI-TENANCY] Coluna 'store_id' adicionada à tabela orders"
     );
+  } else {
+    console.log("✅ [MULTI-TENANCY] Coluna 'store_id' já existe em orders");
   }
 
   // ========== MIGRAÇÃO: Atribui store_id padrão para produtos/pedidos existentes ==========
