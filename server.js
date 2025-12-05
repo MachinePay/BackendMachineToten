@@ -445,6 +445,10 @@ app.post("/api/auth/login", (req, res) => {
   }
 });
 
+// ========== APLICA MIDDLEWARE MULTI-TENANCY ==========
+// IMPORTANTE: Deve vir ANTES de todas as rotas da API
+app.use(extractStoreId);
+
 // --- Rotas da API (Menu, Usuários, Pedidos) ---
 
 app.get("/api/menu", async (req, res) => {
@@ -573,9 +577,6 @@ const extractStoreId = (req, res, next) => {
   console.log(`✅ [MIDDLEWARE] storeId anexado ao request: ${req.storeId}`);
   next();
 };
-
-// Aplica middleware globalmente (exceto rotas públicas que já foram filtradas acima)
-app.use(extractStoreId);
 
 // CRUD de Produtos (Admin)
 
