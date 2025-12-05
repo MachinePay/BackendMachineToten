@@ -424,11 +424,17 @@ app.post("/api/auth/login", (req, res) => {
 
 app.get("/api/menu", async (req, res) => {
   try {
+    console.log(`📋 [GET /api/menu] Store ID recebido: ${req.storeId}`);
+
     // MULTI-TENANCY: Filtra produtos por store_id
     const products = await db("products")
       .where({ store_id: req.storeId })
       .select("*")
       .orderBy("id");
+
+    console.log(
+      `✅ [GET /api/menu] Retornando ${products.length} produtos da loja ${req.storeId}`
+    );
 
     res.json(
       products.map((p) => {
@@ -448,7 +454,14 @@ app.get("/api/menu", async (req, res) => {
       })
     );
   } catch (e) {
-    res.status(500).json({ error: "Erro ao buscar menu" });
+    console.error(`❌ [GET /api/menu] ERRO ao buscar menu:`, e.message);
+    console.error(`❌ [GET /api/menu] Stack:`, e.stack);
+    console.error(`❌ [GET /api/menu] Store ID: ${req.storeId}`);
+    res.status(500).json({
+      error: "Erro ao buscar menu",
+      details: e.message,
+      storeId: req.storeId,
+    });
   }
 });
 
