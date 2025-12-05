@@ -272,6 +272,37 @@ async function initDatabase() {
     );
   }
 
+  // ========== MIGRAÇÃO: Atribui store_id padrão para produtos/pedidos existentes ==========
+  const productsWithoutStore = await db("products")
+    .whereNull("store_id")
+    .count("id as count")
+    .first();
+
+  if (Number(productsWithoutStore.count) > 0) {
+    console.log(
+      `🔄 [MIGRAÇÃO] Encontrados ${productsWithoutStore.count} produtos sem store_id`
+    );
+    await db("products").whereNull("store_id").update({ store_id: "pastel1" }); // Loja padrão
+    console.log(
+      `✅ [MIGRAÇÃO] ${productsWithoutStore.count} produtos atribuídos à loja 'pastel1'`
+    );
+  }
+
+  const ordersWithoutStore = await db("orders")
+    .whereNull("store_id")
+    .count("id as count")
+    .first();
+
+  if (Number(ordersWithoutStore.count) > 0) {
+    console.log(
+      `🔄 [MIGRAÇÃO] Encontrados ${ordersWithoutStore.count} pedidos sem store_id`
+    );
+    await db("orders").whereNull("store_id").update({ store_id: "pastel1" }); // Loja padrão
+    console.log(
+      `✅ [MIGRAÇÃO] ${ordersWithoutStore.count} pedidos atribuídos à loja 'pastel1'`
+    );
+  }
+
   const result = await db("products").count("id as count").first();
   if (Number(result.count) === 0) {
     try {
