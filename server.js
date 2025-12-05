@@ -250,38 +250,51 @@ async function initDatabase() {
 
   // ========== MULTI-TENANCY: Adiciona store_id nas tabelas ==========
 
-  console.log("🔍 [MULTI-TENANCY] Verificando coluna store_id em products...");
+  console.log(
+    "🔍 [MULTI-TENANCY] Forçando criação de colunas com SQL bruto..."
+  );
 
-  // Adiciona store_id na tabela products
-  const hasProductStoreId = await db.schema.hasColumn("products", "store_id");
-  if (!hasProductStoreId) {
-    console.log(
-      "⏳ [MULTI-TENANCY] Adicionando coluna store_id em products..."
+  // FORÇAR com SQL bruto (ignora cache do Knex)
+  try {
+    await db.raw(
+      "ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id VARCHAR(255)"
     );
-    await db.schema.table("products", (table) => {
-      table.string("store_id").index(); // Indexado para performance
-    });
+    console.log("✅ [MULTI-TENANCY] Coluna store_id em products (SQL bruto)");
+  } catch (err) {
     console.log(
-      "✅ [MULTI-TENANCY] Coluna 'store_id' adicionada à tabela products"
+      "ℹ️ [MULTI-TENANCY] Coluna store_id já existe em products:",
+      err.message
     );
-  } else {
-    console.log("✅ [MULTI-TENANCY] Coluna 'store_id' já existe em products");
   }
 
-  console.log("🔍 [MULTI-TENANCY] Verificando coluna store_id em orders...");
-
-  // Adiciona store_id na tabela orders
-  const hasOrderStoreId = await db.schema.hasColumn("orders", "store_id");
-  if (!hasOrderStoreId) {
-    console.log("⏳ [MULTI-TENANCY] Adicionando coluna store_id em orders...");
-    await db.schema.table("orders", (table) => {
-      table.string("store_id").index(); // Indexado para performance
-    });
-    console.log(
-      "✅ [MULTI-TENANCY] Coluna 'store_id' adicionada à tabela orders"
+  try {
+    await db.raw(
+      "CREATE INDEX IF NOT EXISTS products_store_id_index ON products(store_id)"
     );
-  } else {
-    console.log("✅ [MULTI-TENANCY] Coluna 'store_id' já existe em orders");
+    console.log("✅ [MULTI-TENANCY] Índice criado em products.store_id");
+  } catch (err) {
+    console.log("ℹ️ [MULTI-TENANCY] Índice já existe:", err.message);
+  }
+
+  try {
+    await db.raw(
+      "ALTER TABLE orders ADD COLUMN IF NOT EXISTS store_id VARCHAR(255)"
+    );
+    console.log("✅ [MULTI-TENANCY] Coluna store_id em orders (SQL bruto)");
+  } catch (err) {
+    console.log(
+      "ℹ️ [MULTI-TENANCY] Coluna store_id já existe em orders:",
+      err.message
+    );
+  }
+
+  try {
+    await db.raw(
+      "CREATE INDEX IF NOT EXISTS orders_store_id_index ON orders(store_id)"
+    );
+    console.log("✅ [MULTI-TENANCY] Índice criado em orders.store_id");
+  } catch (err) {
+    console.log("ℹ️ [MULTI-TENANCY] Índice já existe:", err.message);
   }
 
   // ========== MIGRAÇÃO: Atribui store_id padrão para produtos/pedidos existentes ==========
@@ -520,6 +533,9 @@ const authorizeKitchen = (req, res, next) => {
 // ========== MIDDLEWARE MULTI-TENANCY ==========
 // Extrai e valida o storeId de cada requisição
 const extractStoreId = (req, res, next) => {
+  console.log(`🔍 [MIDDLEWARE] Rota: ${req.method} ${req.path}`);
+  console.log(`🔍 [MIDDLEWARE] Headers:`, JSON.stringify(req.headers, null, 2));
+
   // Verifica se é uma rota que não precisa de storeId (rotas globais/públicas)
   const publicRoutes = [
     "/",
@@ -536,13 +552,16 @@ const extractStoreId = (req, res, next) => {
       (route) => req.path === route || req.path.startsWith(route)
     )
   ) {
+    console.log(`✅ [MIDDLEWARE] Rota pública, pulando validação`);
     return next();
   }
 
   // Extrai storeId do header ou query param
   const storeId = req.headers["x-store-id"] || req.query.storeId;
+  console.log(`🔍 [MIDDLEWARE] storeId extraído: ${storeId}`);
 
   if (!storeId) {
+    console.log(`❌ [MIDDLEWARE] storeId ausente!`);
     return res.status(400).json({
       error:
         "storeId é obrigatório. Envie via header 'x-store-id' ou query param 'storeId'",
@@ -551,6 +570,7 @@ const extractStoreId = (req, res, next) => {
 
   // Anexa storeId ao request para uso nos endpoints
   req.storeId = storeId;
+  console.log(`✅ [MIDDLEWARE] storeId anexado ao request: ${req.storeId}`);
   next();
 };
 
