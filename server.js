@@ -445,6 +445,50 @@ app.post("/api/auth/login", (req, res) => {
   }
 });
 
+// ========== MIDDLEWARE MULTI-TENANCY ==========
+// Extrai e valida o storeId de cada requisição
+const extractStoreId = (req, res, next) => {
+  console.log(`🔍 [MIDDLEWARE] Rota: ${req.method} ${req.path}`);
+  console.log(`🔍 [MIDDLEWARE] Headers:`, JSON.stringify(req.headers, null, 2));
+
+  // Verifica se é uma rota que não precisa de storeId (rotas globais/públicas)
+  const publicRoutes = [
+    "/",
+    "/health",
+    "/api/auth/login",
+    "/api/webhooks/mercadopago",
+    "/api/notifications/mercadopago",
+    "/api/super-admin/dashboard", // Super Admin tem acesso global
+  ];
+
+  // Se for rota pública, pula validação
+  if (
+    publicRoutes.some(
+      (route) => req.path === route || req.path.startsWith(route)
+    )
+  ) {
+    console.log(`✅ [MIDDLEWARE] Rota pública, pulando validação`);
+    return next();
+  }
+
+  // Extrai storeId do header ou query param
+  const storeId = req.headers["x-store-id"] || req.query.storeId;
+  console.log(`🔍 [MIDDLEWARE] storeId extraído: ${storeId}`);
+
+  if (!storeId) {
+    console.log(`❌ [MIDDLEWARE] storeId ausente!`);
+    return res.status(400).json({
+      error:
+        "storeId é obrigatório. Envie via header 'x-store-id' ou query param 'storeId'",
+    });
+  }
+
+  // Anexa storeId ao request para uso nos endpoints
+  req.storeId = storeId;
+  console.log(`✅ [MIDDLEWARE] storeId anexado ao request: ${req.storeId}`);
+  next();
+};
+
 // ========== APLICA MIDDLEWARE MULTI-TENANCY ==========
 // IMPORTANTE: Deve vir ANTES de todas as rotas da API
 app.use(extractStoreId);
@@ -531,50 +575,6 @@ const authorizeKitchen = (req, res, next) => {
       error: "Acesso negado. Requer permissão da cozinha ou de administrador.",
     });
   }
-  next();
-};
-
-// ========== MIDDLEWARE MULTI-TENANCY ==========
-// Extrai e valida o storeId de cada requisição
-const extractStoreId = (req, res, next) => {
-  console.log(`🔍 [MIDDLEWARE] Rota: ${req.method} ${req.path}`);
-  console.log(`🔍 [MIDDLEWARE] Headers:`, JSON.stringify(req.headers, null, 2));
-
-  // Verifica se é uma rota que não precisa de storeId (rotas globais/públicas)
-  const publicRoutes = [
-    "/",
-    "/health",
-    "/api/auth/login",
-    "/api/webhooks/mercadopago",
-    "/api/notifications/mercadopago",
-    "/api/super-admin/dashboard", // Super Admin tem acesso global
-  ];
-
-  // Se for rota pública, pula validação
-  if (
-    publicRoutes.some(
-      (route) => req.path === route || req.path.startsWith(route)
-    )
-  ) {
-    console.log(`✅ [MIDDLEWARE] Rota pública, pulando validação`);
-    return next();
-  }
-
-  // Extrai storeId do header ou query param
-  const storeId = req.headers["x-store-id"] || req.query.storeId;
-  console.log(`🔍 [MIDDLEWARE] storeId extraído: ${storeId}`);
-
-  if (!storeId) {
-    console.log(`❌ [MIDDLEWARE] storeId ausente!`);
-    return res.status(400).json({
-      error:
-        "storeId é obrigatório. Envie via header 'x-store-id' ou query param 'storeId'",
-    });
-  }
-
-  // Anexa storeId ao request para uso nos endpoints
-  req.storeId = storeId;
-  console.log(`✅ [MIDDLEWARE] storeId anexado ao request: ${req.storeId}`);
   next();
 };
 
