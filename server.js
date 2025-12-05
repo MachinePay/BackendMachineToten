@@ -459,14 +459,12 @@ const extractStoreId = (req, res, next) => {
     "/api/webhooks/mercadopago",
     "/api/notifications/mercadopago",
     "/api/super-admin/dashboard", // Super Admin tem acesso global
+    "/api/point/configure",
+    "/api/point/status",
   ];
 
-  // Se for rota pública, pula validação
-  if (
-    publicRoutes.some(
-      (route) => req.path === route || req.path.startsWith(route)
-    )
-  ) {
+  // Se for rota pública, pula validação (match EXATO apenas)
+  if (publicRoutes.includes(req.path)) {
     console.log(`✅ [MIDDLEWARE] Rota pública, pulando validação`);
     return next();
   }
