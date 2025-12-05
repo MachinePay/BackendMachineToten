@@ -19,6 +19,7 @@ const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
 const MP_DEVICE_ID = process.env.MP_DEVICE_ID;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const KITCHEN_PASSWORD = process.env.KITCHEN_PASSWORD;
+const SUPER_ADMIN_PASSWORD = process.env.SUPER_ADMIN_PASSWORD;
 const JWT_SECRET = process.env.JWT_SECRET;
 const REDIS_URL = process.env.REDIS_URL;
 
@@ -247,6 +248,30 @@ async function initDatabase() {
     console.log("✅ Coluna 'observation' adicionada à tabela orders");
   }
 
+  // ========== MULTI-TENANCY: Adiciona store_id nas tabelas ==========
+
+  // Adiciona store_id na tabela products
+  const hasProductStoreId = await db.schema.hasColumn("products", "store_id");
+  if (!hasProductStoreId) {
+    await db.schema.table("products", (table) => {
+      table.string("store_id").index(); // Indexado para performance
+    });
+    console.log(
+      "✅ [MULTI-TENANCY] Coluna 'store_id' adicionada à tabela products"
+    );
+  }
+
+  // Adiciona store_id na tabela orders
+  const hasOrderStoreId = await db.schema.hasColumn("orders", "store_id");
+  if (!hasOrderStoreId) {
+    await db.schema.table("orders", (table) => {
+      table.string("store_id").index(); // Indexado para performance
+    });
+    console.log(
+      "✅ [MULTI-TENANCY] Coluna 'store_id' adicionada à tabela orders"
+    );
+  }
+
   const result = await db("products").count("id as count").first();
   if (Number(result.count) === 0) {
     try {
@@ -368,7 +393,12 @@ app.post("/api/auth/login", (req, res) => {
 
 app.get("/api/menu", async (req, res) => {
   try {
-    const products = await db("products").select("*").orderBy("id");
+    // MULTI-TENANCY: Filtra produtos por store_id
+    const products = await db("products")
+      .where({ store_id: req.storeId })
+      .select("*")
+      .orderBy("id");
+
     res.json(
       products.map((p) => {
         const stockAvailable =
@@ -431,6 +461,46 @@ const authorizeKitchen = (req, res, next) => {
   next();
 };
 
+// ========== MIDDLEWARE MULTI-TENANCY ==========
+// Extrai e valida o storeId de cada requisição
+const extractStoreId = (req, res, next) => {
+  // Verifica se é uma rota que não precisa de storeId (rotas globais/públicas)
+  const publicRoutes = [
+    "/",
+    "/health",
+    "/api/auth/login",
+    "/api/webhooks/mercadopago",
+    "/api/notifications/mercadopago",
+    "/api/super-admin/dashboard", // Super Admin tem acesso global
+  ];
+
+  // Se for rota pública, pula validação
+  if (
+    publicRoutes.some(
+      (route) => req.path === route || req.path.startsWith(route)
+    )
+  ) {
+    return next();
+  }
+
+  // Extrai storeId do header ou query param
+  const storeId = req.headers["x-store-id"] || req.query.storeId;
+
+  if (!storeId) {
+    return res.status(400).json({
+      error:
+        "storeId é obrigatório. Envie via header 'x-store-id' ou query param 'storeId'",
+    });
+  }
+
+  // Anexa storeId ao request para uso nos endpoints
+  req.storeId = storeId;
+  next();
+};
+
+// Aplica middleware globalmente (exceto rotas públicas que já foram filtradas acima)
+app.use(extractStoreId);
+
 // CRUD de Produtos (Admin)
 
 app.post(
@@ -457,6 +527,7 @@ app.post(
         videoUrl: videoUrl || "",
         popular: popular || false,
         stock: stock !== undefined ? parseInt(stock) : null, // null = ilimitado
+        store_id: req.storeId, // MULTI-TENANCY: Associa produto à loja
       };
 
       await db("products").insert(newProduct);
@@ -481,9 +552,14 @@ app.put(
       req.body;
 
     try {
-      const exists = await db("products").where({ id }).first();
+      // MULTI-TENANCY: Busca produto apenas da loja específica
+      const exists = await db("products")
+        .where({ id, store_id: req.storeId })
+        .first();
       if (!exists) {
-        return res.status(404).json({ error: "Produto não encontrado" });
+        return res
+          .status(404)
+          .json({ error: "Produto não encontrado nesta loja" });
       }
 
       const updates = {};
@@ -496,9 +572,12 @@ app.put(
       if (stock !== undefined)
         updates.stock = stock === null ? null : parseInt(stock);
 
-      await db("products").where({ id }).update(updates);
+      // MULTI-TENANCY: Atualiza apenas se pertencer à loja
+      await db("products").where({ id, store_id: req.storeId }).update(updates);
 
-      const updated = await db("products").where({ id }).first();
+      const updated = await db("products")
+        .where({ id, store_id: req.storeId })
+        .first();
       res.json({
         ...updated,
         price: parseFloat(updated.price),
@@ -519,12 +598,18 @@ app.delete(
     const { id } = req.params;
 
     try {
-      const exists = await db("products").where({ id }).first();
+      // MULTI-TENANCY: Busca produto apenas da loja específica
+      const exists = await db("products")
+        .where({ id, store_id: req.storeId })
+        .first();
       if (!exists) {
-        return res.status(404).json({ error: "Produto não encontrado" });
+        return res
+          .status(404)
+          .json({ error: "Produto não encontrado nesta loja" });
       }
 
-      await db("products").where({ id }).del();
+      // MULTI-TENANCY: Deleta apenas se pertencer à loja
+      await db("products").where({ id, store_id: req.storeId }).del();
       res.json({ success: true, message: "Produto deletado com sucesso" });
     } catch (e) {
       console.error("Erro ao deletar produto:", e);
@@ -703,6 +788,7 @@ app.post("/api/orders", async (req, res) => {
     status: paymentId ? "active" : "pending_payment",
     paymentStatus: paymentId ? "paid" : "pending",
     paymentId: paymentId || null,
+    store_id: req.storeId, // MULTI-TENANCY: Associa pedido à loja
   };
 
   try {
@@ -725,10 +811,15 @@ app.post("/api/orders", async (req, res) => {
     console.log(`🔒 Reservando estoque de ${items.length} produto(s)...`);
 
     for (const item of items) {
-      const product = await db("products").where({ id: item.id }).first();
+      // MULTI-TENANCY: Busca produto apenas da loja específica
+      const product = await db("products")
+        .where({ id: item.id, store_id: req.storeId })
+        .first();
 
       if (!product) {
-        console.warn(`⚠️ Produto ${item.id} não encontrado no estoque`);
+        console.warn(
+          `⚠️ Produto ${item.id} não encontrado no estoque da loja ${req.storeId}`
+        );
         continue;
       }
 
@@ -2592,6 +2683,112 @@ Seja direto, prático e use emojis. Priorize ações que o administrador pode to
     }
   }
 );
+
+// ========== SUPER ADMIN DASHBOARD (MULTI-TENANCY) ==========
+// Endpoint protegido que ignora filtro de loja e retorna visão global
+app.get("/api/super-admin/dashboard", async (req, res) => {
+  try {
+    // Verifica autenticação de Super Admin via header
+    const superAdminPassword = req.headers["x-super-admin-password"];
+
+    if (!SUPER_ADMIN_PASSWORD) {
+      return res.status(503).json({
+        error:
+          "Super Admin não configurado. Defina SUPER_ADMIN_PASSWORD no servidor.",
+      });
+    }
+
+    if (superAdminPassword !== SUPER_ADMIN_PASSWORD) {
+      return res.status(401).json({
+        error: "Acesso negado. Senha de Super Admin inválida.",
+      });
+    }
+
+    console.log("🔐 Super Admin acessando dashboard global...");
+
+    // 1. Lista todas as store_id ativas (com pedidos ou produtos)
+    const storesFromOrders = await db("orders")
+      .distinct("store_id")
+      .whereNotNull("store_id");
+
+    const storesFromProducts = await db("products")
+      .distinct("store_id")
+      .whereNotNull("store_id");
+
+    // Combina e remove duplicatas
+    const allStoreIds = [
+      ...new Set([
+        ...storesFromOrders.map((s) => s.store_id),
+        ...storesFromProducts.map((s) => s.store_id),
+      ]),
+    ];
+
+    // 2. Calcula estatísticas por loja
+    const storeStats = await Promise.all(
+      allStoreIds.map(async (storeId) => {
+        // Total de pedidos
+        const orderCount = await db("orders")
+          .where({ store_id: storeId })
+          .count("id as count")
+          .first();
+
+        // Faturamento total (apenas pedidos pagos)
+        const revenue = await db("orders")
+          .where({ store_id: storeId })
+          .whereIn("paymentStatus", ["paid", "authorized"])
+          .sum("total as total")
+          .first();
+
+        // Total de produtos
+        const productCount = await db("products")
+          .where({ store_id: storeId })
+          .count("id as count")
+          .first();
+
+        // Pedidos ativos (na cozinha)
+        const activeOrders = await db("orders")
+          .where({ store_id: storeId, status: "active" })
+          .count("id as count")
+          .first();
+
+        return {
+          store_id: storeId,
+          total_orders: Number(orderCount.count) || 0,
+          total_revenue: parseFloat(revenue.total) || 0,
+          total_products: Number(productCount.count) || 0,
+          active_orders: Number(activeOrders.count) || 0,
+        };
+      })
+    );
+
+    // 3. Estatísticas globais
+    const globalStats = {
+      total_stores: allStoreIds.length,
+      total_orders: storeStats.reduce((sum, s) => sum + s.total_orders, 0),
+      total_revenue: storeStats.reduce((sum, s) => sum + s.total_revenue, 0),
+      total_products: storeStats.reduce((sum, s) => sum + s.total_products, 0),
+      total_active_orders: storeStats.reduce(
+        (sum, s) => sum + s.active_orders,
+        0
+      ),
+    };
+
+    console.log(`✅ Dashboard gerado: ${allStoreIds.length} loja(s) ativa(s)`);
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      global_stats: globalStats,
+      stores: storeStats.sort((a, b) => b.total_revenue - a.total_revenue), // Ordena por faturamento
+    });
+  } catch (error) {
+    console.error("❌ Erro no Super Admin Dashboard:", error);
+    res.status(500).json({
+      error: "Erro ao gerar dashboard",
+      message: error.message,
+    });
+  }
+});
 
 // --- Inicialização ---
 console.log("🚀 Iniciando servidor...");
