@@ -248,6 +248,19 @@ async function initDatabase() {
     console.log("✅ Coluna 'observation' adicionada à tabela orders");
   }
 
+  // ========== TABELA DE CATEGORIAS (Multi-tenancy) ==========
+  if (!(await db.schema.hasTable("categories"))) {
+    await db.schema.createTable("categories", (table) => {
+      table.string("id").primary();
+      table.string("name").notNullable();
+      table.string("store_id").notNullable().index();
+      table.string("icon").defaultTo("📦"); // Emoji da categoria
+      table.integer("order").defaultTo(0); // Ordem de exibição
+      table.timestamp("created_at").defaultTo(db.fn.now());
+    });
+    console.log("✅ Tabela 'categories' criada com sucesso");
+  }
+
   // ========== MULTI-TENANCY: Adiciona store_id nas tabelas ==========
 
   console.log(
@@ -710,6 +723,191 @@ app.delete(
     } catch (e) {
       console.error("Erro ao deletar produto:", e);
       res.status(500).json({ error: "Erro ao deletar produto" });
+    }
+  }
+);
+
+// ========== CRUD DE CATEGORIAS (Multi-tenancy) ==========
+
+// Listar categorias da loja
+app.get("/api/categories", async (req, res) => {
+  try {
+    const storeId = req.storeId;
+
+    if (!storeId) {
+      return res.status(400).json({ error: "Store ID obrigatório" });
+    }
+
+    const categories = await db("categories")
+      .where({ store_id: storeId })
+      .orderBy("order", "asc")
+      .orderBy("name", "asc");
+
+    console.log(
+      `📂 [GET /api/categories] ${categories.length} categorias da loja ${storeId}`
+    );
+
+    res.json(categories);
+  } catch (e) {
+    console.error("❌ Erro ao buscar categorias:", e);
+    res.status(500).json({ error: "Erro ao buscar categorias" });
+  }
+});
+
+// Criar nova categoria
+app.post(
+  "/api/categories",
+  authenticateToken,
+  authorizeAdmin,
+  async (req, res) => {
+    const { name, icon, order } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: "Nome da categoria é obrigatório" });
+    }
+
+    try {
+      const storeId = req.storeId;
+
+      if (!storeId) {
+        return res.status(400).json({ error: "Store ID obrigatório" });
+      }
+
+      // Verifica se categoria já existe na loja
+      const exists = await db("categories")
+        .where({ name, store_id: storeId })
+        .first();
+
+      if (exists) {
+        return res.status(409).json({
+          error: "Categoria já existe nesta loja",
+          category: exists,
+        });
+      }
+
+      const newCategory = {
+        id: `cat_${Date.now()}`,
+        name: name.trim(),
+        icon: icon || "📦",
+        order: order || 0,
+        store_id: storeId,
+      };
+
+      await db("categories").insert(newCategory);
+
+      console.log(
+        `✅ [POST /api/categories] Categoria criada: ${name} (${storeId})`
+      );
+
+      res.status(201).json(newCategory);
+    } catch (e) {
+      console.error("❌ Erro ao criar categoria:", e);
+      res.status(500).json({ error: "Erro ao criar categoria" });
+    }
+  }
+);
+
+// Atualizar categoria
+app.put(
+  "/api/categories/:id",
+  authenticateToken,
+  authorizeAdmin,
+  async (req, res) => {
+    const { id } = req.params;
+    const { name, icon, order } = req.body;
+
+    try {
+      const storeId = req.storeId;
+
+      if (!storeId) {
+        return res.status(400).json({ error: "Store ID obrigatório" });
+      }
+
+      // Verifica se categoria existe na loja
+      const exists = await db("categories")
+        .where({ id, store_id: storeId })
+        .first();
+
+      if (!exists) {
+        return res
+          .status(404)
+          .json({ error: "Categoria não encontrada nesta loja" });
+      }
+
+      const updates = {};
+      if (name !== undefined) updates.name = name.trim();
+      if (icon !== undefined) updates.icon = icon;
+      if (order !== undefined) updates.order = order;
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: "Nenhum campo para atualizar" });
+      }
+
+      await db("categories").where({ id, store_id: storeId }).update(updates);
+
+      const updated = await db("categories").where({ id }).first();
+
+      console.log(
+        `✅ [PUT /api/categories/${id}] Categoria atualizada (${storeId})`
+      );
+
+      res.json(updated);
+    } catch (e) {
+      console.error("❌ Erro ao atualizar categoria:", e);
+      res.status(500).json({ error: "Erro ao atualizar categoria" });
+    }
+  }
+);
+
+// Deletar categoria
+app.delete(
+  "/api/categories/:id",
+  authenticateToken,
+  authorizeAdmin,
+  async (req, res) => {
+    const { id } = req.params;
+
+    try {
+      const storeId = req.storeId;
+
+      if (!storeId) {
+        return res.status(400).json({ error: "Store ID obrigatório" });
+      }
+
+      // Verifica se categoria existe na loja
+      const exists = await db("categories")
+        .where({ id, store_id: storeId })
+        .first();
+
+      if (!exists) {
+        return res
+          .status(404)
+          .json({ error: "Categoria não encontrada nesta loja" });
+      }
+
+      // Verifica se há produtos usando essa categoria
+      const productsCount = await db("products")
+        .where({ category: exists.name, store_id: storeId })
+        .count("id as count")
+        .first();
+
+      if (Number(productsCount.count) > 0) {
+        return res.status(409).json({
+          error: `Não é possível deletar. Existem ${productsCount.count} produtos usando esta categoria.`,
+          productsCount: Number(productsCount.count),
+        });
+      }
+
+      await db("categories").where({ id, store_id: storeId }).del();
+
+      console.log(
+        `✅ [DELETE /api/categories/${id}] Categoria deletada (${storeId})`
+      );
+
+      res.json({ success: true, message: "Categoria deletada com sucesso" });
+    } catch (e) {
+      console.error("❌ Erro ao deletar categoria:", e);
+      res.status(500).json({ error: "Erro ao deletar categoria" });
     }
   }
 );
