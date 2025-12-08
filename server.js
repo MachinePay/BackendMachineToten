@@ -461,11 +461,32 @@ const extractStoreId = (req, res, next) => {
     "/api/super-admin/dashboard", // Super Admin tem acesso global
     "/api/point/configure",
     "/api/point/status",
+    "/api/ai/suggestion", // IA: Sugestões de produtos
+    "/api/ai/chat", // IA: Chat geral
+    "/api/ai/kitchen-priority", // IA: Priorização de pedidos
+    "/api/users/check-cpf", // Usuários: Verificar CPF
+    "/api/users/register", // Usuários: Cadastro
+    "/api/payment/create-pix", // Pagamentos: Criar PIX
+    "/api/payment/create", // Pagamentos: Criar pagamento
+    "/api/payment/clear-queue", // Pagamentos: Limpar fila
   ];
 
   // Se for rota pública, pula validação (match EXATO apenas)
   if (publicRoutes.includes(req.path)) {
     console.log(`✅ [MIDDLEWARE] Rota pública, pulando validação`);
+    return next();
+  }
+
+  // Verifica rotas dinâmicas (com parâmetros)
+  const publicRoutesPatterns = [
+    /^\/api\/payment\/status\/.+$/, // /api/payment/status/:paymentId
+    /^\/api\/payment\/status-pix\/.+$/, // /api/payment/status-pix/:orderId
+    /^\/api\/payment\/cancel\/.+$/, // /api/payment/cancel/:paymentId
+    /^\/api\/users\/cpf\/.+$/, // /api/users/cpf/:cpf
+  ];
+
+  if (publicRoutesPatterns.some((pattern) => pattern.test(req.path))) {
+    console.log(`✅ [MIDDLEWARE] Rota dinâmica pública, pulando validação`);
     return next();
   }
 
