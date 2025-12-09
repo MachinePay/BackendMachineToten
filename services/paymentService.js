@@ -100,34 +100,26 @@ export async function createCardPayment(paymentData, storeConfig) {
 
     const idempotencyKey = `card_${orderId}_${Date.now()}`;
 
-    const response = await fetch("https://api.mercadopago.com/v1/payments", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${mp_access_token}`,
-        "Content-Type": "application/json",
-        "X-Idempotency-Key": idempotencyKey,
-      },
-      body: JSON.stringify({
-        transaction_amount: parseFloat(amount),
-        description: description || "Pedido",
-        payment_method_id: "credit_card",
-        external_reference: orderId,
-        point_of_interaction: {
-          type: "SMARTPOS",
-          application_data: {
-            name: "Kiosk Pro",
-            version: "1.0",
-          },
-          business_info: {
-            unit: mp_device_id,
-            sub_unit: "1",
-          },
+    // Para Point Smart, usar a Point Integration API
+    const response = await fetch(
+      `https://api.mercadopago.com/point/integration-api/devices/${mp_device_id}/payment-intents`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${mp_access_token}`,
+          "Content-Type": "application/json",
+          "X-Idempotency-Key": idempotencyKey,
         },
-        notification_url: `${
-          process.env.FRONTEND_URL || "https://backendkioskpro.onrender.com"
-        }/api/notifications/mercadopago`,
-      }),
-    });
+        body: JSON.stringify({
+          amount: parseFloat(amount),
+          description: description || "Pedido",
+          external_reference: orderId,
+          notification_url: `${
+            process.env.FRONTEND_URL || "https://backendkioskpro.onrender.com"
+          }/api/notifications/mercadopago`,
+        }),
+      }
+    );
 
     const data = await response.json();
 
@@ -136,12 +128,15 @@ export async function createCardPayment(paymentData, storeConfig) {
       throw new Error(data.message || "Erro ao criar pagamento");
     }
 
-    console.log(`✅ [CARD] Criado! Payment ID: ${data.id}`);
+    console.log(`✅ [CARD] Payment Intent criado! ID: ${data.id}`);
+    console.log(`   Status: ${data.state}`);
 
     return {
-      paymentId: data.id,
-      status: data.status,
+      paymentIntentId: data.id,
+      paymentId: data.payment?.id || null,
+      status: data.state || "pending",
       type: "card",
+      device_id: mp_device_id,
     };
   } catch (error) {
     console.error("❌ [CARD] Erro:", error);
