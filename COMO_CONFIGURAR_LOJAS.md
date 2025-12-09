@@ -5,6 +5,7 @@
 **Tabela do Banco de Dados:** `stores`
 
 Cada loja tem suas próprias credenciais do Mercado Pago:
+
 - **mp_access_token**: Token da aplicação do Mercado Pago
 - **mp_device_id**: ID da maquininha Point (para pagamentos com cartão)
 
@@ -29,17 +30,20 @@ CREATE TABLE stores (
 ### Opção 1: Via SQL (Recomendado para Produção)
 
 #### 1️⃣ Conectar ao Banco (PostgreSQL no Render)
+
 ```bash
 # Local (substituir pela sua connection string do Render)
 psql postgresql://user:password@host:port/database
 ```
 
 #### 2️⃣ Ver Lojas Existentes
+
 ```sql
 SELECT id, name, mp_access_token, mp_device_id FROM stores;
 ```
 
 **Resultado esperado:**
+
 ```
 id            | name         | mp_access_token      | mp_device_id
 --------------+--------------+----------------------+-------------------------
@@ -47,6 +51,7 @@ loja-padrao   | Loja Padrão  | APP_USR-123456...    | GERTEC_MP35P__ABC123
 ```
 
 #### 3️⃣ Criar Nova Loja
+
 ```sql
 INSERT INTO stores (id, name, mp_access_token, mp_device_id)
 VALUES (
@@ -58,25 +63,27 @@ VALUES (
 ```
 
 #### 4️⃣ Atualizar Loja Existente
+
 ```sql
 -- Atualizar apenas o Token
-UPDATE stores 
+UPDATE stores
 SET mp_access_token = 'APP_USR-NOVO-TOKEN-AQUI'
 WHERE id = 'pastel1';
 
 -- Atualizar apenas a Maquininha
-UPDATE stores 
+UPDATE stores
 SET mp_device_id = 'GERTEC_MP35P__NOVO_DEVICE'
 WHERE id = 'pastel1';
 
 -- Atualizar os dois
-UPDATE stores 
+UPDATE stores
 SET mp_access_token = 'APP_USR-NOVO-TOKEN',
     mp_device_id = 'GERTEC_MP35P__NOVO_DEVICE'
 WHERE id = 'pastel1';
 ```
 
 #### 5️⃣ Deletar Loja
+
 ```sql
 DELETE FROM stores WHERE id = 'pastel1';
 ```
@@ -86,15 +93,18 @@ DELETE FROM stores WHERE id = 'pastel1';
 ### Opção 2: Via Ferramenta Visual (Para Quem Prefere Interface)
 
 #### **Render Dashboard:**
+
 1. Acesse: https://dashboard.render.com
 2. Clique no seu banco de dados PostgreSQL
 3. Vá em **"Connect"** → **"External Connection"**
 4. Use uma ferramenta como:
+
    - **DBeaver** (grátis): https://dbeaver.io/
    - **pgAdmin** (grátis): https://www.pgadmin.org/
    - **TablePlus** (pago): https://tableplus.com/
 
 5. Configure a conexão com os dados do Render:
+
    - Host: `seu-db.render.com`
    - Port: `5432`
    - Database: `nome_do_db`
@@ -131,6 +141,7 @@ DELETE /api/admin/stores/:id       // Deletar loja
    - Formato: `APP_USR-1234567890-XXXXXX-abcdef123456789`
 
 **⚠️ IMPORTANTE:**
+
 - Cada loja deve ter sua própria conta do Mercado Pago
 - Não compartilhar tokens entre lojas
 - Usar tokens de **PRODUÇÃO** (não teste)
@@ -140,18 +151,21 @@ DELETE /api/admin/stores/:id       // Deletar loja
 ### 2️⃣ Obter `mp_device_id` (ID da Maquininha Point)
 
 #### **Método 1: Via Aplicativo Point**
+
 1. Ligue a Point Smart
 2. Acesse: **Configurações** → **Sobre o dispositivo**
 3. Copie o **"Device ID"** ou **"Serial Number"**
    - Formato: `GERTEC_MP35P__12345678` ou similar
 
 #### **Método 2: Via API do Mercado Pago**
+
 ```bash
 curl -X GET https://api.mercadopago.com/point/integration-api/devices \
   -H "Authorization: Bearer APP_USR-TOKEN-AQUI"
 ```
 
 **Response:**
+
 ```json
 {
   "devices": [
@@ -169,6 +183,7 @@ curl -X GET https://api.mercadopago.com/point/integration-api/devices \
 ## 📋 Exemplos de Configuração
 
 ### Exemplo 1: Loja com PIX e Cartão (Point)
+
 ```sql
 INSERT INTO stores (id, name, mp_access_token, mp_device_id)
 VALUES (
@@ -180,12 +195,14 @@ VALUES (
 ```
 
 **Funcionalidades:**
+
 - ✅ Pagamentos PIX (QR Code)
 - ✅ Pagamentos com Cartão (Point)
 
 ---
 
 ### Exemplo 2: Loja apenas com PIX (sem maquininha)
+
 ```sql
 INSERT INTO stores (id, name, mp_access_token, mp_device_id)
 VALUES (
@@ -197,16 +214,19 @@ VALUES (
 ```
 
 **Funcionalidades:**
+
 - ✅ Pagamentos PIX (QR Code)
 - ❌ Pagamentos com Cartão (sem Point)
 
 **Comportamento:**
+
 - Endpoints de Point (`/api/payment/point/*`) retornarão erro 400
 - Pagamentos PIX funcionam normalmente
 
 ---
 
 ### Exemplo 3: Múltiplas Lojas
+
 ```sql
 -- Loja 1: Matriz
 INSERT INTO stores (id, name, mp_access_token, mp_device_id)
@@ -226,6 +246,7 @@ VALUES ('delivery', 'Delivery Online', 'APP_USR-TOKEN-DELIVERY', NULL);
 ## 🎯 Como o Frontend Usa as Lojas
 
 ### 1️⃣ Configurar `.env.local` no Frontend (Vercel)
+
 ```bash
 # Para a loja Matriz
 NEXT_PUBLIC_STORE_ID=matriz
@@ -238,16 +259,18 @@ NEXT_PUBLIC_STORE_ID=delivery
 ```
 
 ### 2️⃣ O Interceptor Axios Envia Automaticamente
+
 ```javascript
 // src/api/axios.js
 api.interceptors.request.use((config) => {
-  const storeId = process.env.NEXT_PUBLIC_STORE_ID || 'loja-padrao';
-  config.headers['x-store-id'] = storeId; // Envia para o backend
+  const storeId = process.env.NEXT_PUBLIC_STORE_ID || "loja-padrao";
+  config.headers["x-store-id"] = storeId; // Envia para o backend
   return config;
 });
 ```
 
 ### 3️⃣ Backend Busca as Credenciais Corretas
+
 ```javascript
 // middlewares/storeAuth.js
 const store = await db("stores").where({ id: storeId }).first();
@@ -257,12 +280,13 @@ req.store = store; // Anexa ao request
 ```
 
 ### 4️⃣ Pagamento Usa o Token da Loja Correta
+
 ```javascript
 // services/paymentService.js
 const response = await fetch("https://api.mercadopago.com/v1/payments", {
   headers: {
-    Authorization: `Bearer ${storeConfig.mp_access_token}` // Token da loja específica
-  }
+    Authorization: `Bearer ${storeConfig.mp_access_token}`, // Token da loja específica
+  },
 });
 ```
 
@@ -271,15 +295,16 @@ const response = await fetch("https://api.mercadopago.com/v1/payments", {
 ## 🔍 Como Validar se Está Configurado Corretamente
 
 ### 1️⃣ Verificar Lojas no Banco
+
 ```sql
-SELECT 
+SELECT
   id,
   name,
-  CASE 
+  CASE
     WHEN mp_access_token IS NULL THEN '❌ Não configurado'
     ELSE '✅ Configurado'
   END as token_status,
-  CASE 
+  CASE
     WHEN mp_device_id IS NULL THEN '❌ Sem maquininha'
     ELSE '✅ Com maquininha'
   END as device_status
@@ -287,6 +312,7 @@ FROM stores;
 ```
 
 ### 2️⃣ Testar via cURL
+
 ```bash
 # Testar loja específica
 curl -X POST https://backendkioskpro.onrender.com/api/payment/create-pix \
@@ -296,6 +322,7 @@ curl -X POST https://backendkioskpro.onrender.com/api/payment/create-pix \
 ```
 
 **Response esperado (sucesso):**
+
 ```json
 {
   "paymentId": "123456789",
@@ -306,6 +333,7 @@ curl -X POST https://backendkioskpro.onrender.com/api/payment/create-pix \
 ```
 
 **Response esperado (erro - loja não existe):**
+
 ```json
 {
   "error": "Loja não encontrada: matriz"
@@ -313,6 +341,7 @@ curl -X POST https://backendkioskpro.onrender.com/api/payment/create-pix \
 ```
 
 **Response esperado (erro - sem credenciais):**
+
 ```json
 {
   "error": "Credenciais do Mercado Pago não configuradas para a loja: Matriz"
@@ -320,6 +349,7 @@ curl -X POST https://backendkioskpro.onrender.com/api/payment/create-pix \
 ```
 
 ### 3️⃣ Verificar Logs do Backend
+
 ```bash
 # Render Dashboard → Logs
 🔍 [STORE AUTH] Buscando store: matriz
@@ -333,9 +363,11 @@ curl -X POST https://backendkioskpro.onrender.com/api/payment/create-pix \
 ## 🚨 Troubleshooting
 
 ### Erro: "Loja não encontrada"
+
 **Causa:** Store ID não existe no banco
 
 **Solução:**
+
 ```sql
 -- Verificar se existe
 SELECT * FROM stores WHERE id = 'nome-da-loja';
@@ -348,11 +380,13 @@ VALUES ('nome-da-loja', 'Nome Amigável', 'TOKEN', 'DEVICE_ID');
 ---
 
 ### Erro: "Credenciais não configuradas"
+
 **Causa:** `mp_access_token` está NULL
 
 **Solução:**
+
 ```sql
-UPDATE stores 
+UPDATE stores
 SET mp_access_token = 'APP_USR-SEU-TOKEN-AQUI'
 WHERE id = 'nome-da-loja';
 ```
@@ -360,11 +394,13 @@ WHERE id = 'nome-da-loja';
 ---
 
 ### Erro: "Device ID não configurado" (apenas endpoints Point)
+
 **Causa:** `mp_device_id` está NULL
 
 **Solução:**
+
 ```sql
-UPDATE stores 
+UPDATE stores
 SET mp_device_id = 'GERTEC_MP35P__12345678'
 WHERE id = 'nome-da-loja';
 ```
@@ -373,13 +409,13 @@ WHERE id = 'nome-da-loja';
 
 ## 📊 Resumo Rápido
 
-| O que                  | Onde                           | Como                                    |
-|------------------------|--------------------------------|-----------------------------------------|
-| **Token do MP**        | Tabela `stores`, coluna `mp_access_token` | Copiar do painel do Mercado Pago |
-| **ID da Maquininha**   | Tabela `stores`, coluna `mp_device_id` | Ver na Point ou via API do MP |
-| **Criar Loja**         | SQL: `INSERT INTO stores ...`  | Executar no banco PostgreSQL |
-| **Atualizar Credenciais** | SQL: `UPDATE stores SET ...` | Executar no banco PostgreSQL |
-| **Frontend usa qual loja** | `.env.local`: `NEXT_PUBLIC_STORE_ID` | Variável de ambiente no Vercel |
+| O que                      | Onde                                      | Como                             |
+| -------------------------- | ----------------------------------------- | -------------------------------- |
+| **Token do MP**            | Tabela `stores`, coluna `mp_access_token` | Copiar do painel do Mercado Pago |
+| **ID da Maquininha**       | Tabela `stores`, coluna `mp_device_id`    | Ver na Point ou via API do MP    |
+| **Criar Loja**             | SQL: `INSERT INTO stores ...`             | Executar no banco PostgreSQL     |
+| **Atualizar Credenciais**  | SQL: `UPDATE stores SET ...`              | Executar no banco PostgreSQL     |
+| **Frontend usa qual loja** | `.env.local`: `NEXT_PUBLIC_STORE_ID`      | Variável de ambiente no Vercel   |
 
 ---
 
