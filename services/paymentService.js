@@ -140,7 +140,8 @@ export async function createCardPayment(paymentData, storeConfig) {
     }
 
     console.log(`✅ [CARD] Payment Intent criado! ID: ${data.id}`);
-    console.log(`   Status: ${data.state}`);
+    console.log(`   Estado: ${data.state}`);
+    console.log(`   Resposta completa:`, JSON.stringify(data, null, 2));
 
     return {
       paymentIntentId: data.id,
@@ -355,12 +356,27 @@ export async function clearPaymentQueue(storeConfig) {
       }
     );
 
+    // Status 204 = sucesso sem conteúdo, ou 200-299 = sucesso
     if (!response.ok && response.status !== 204) {
-      const data = await response.json();
-      throw new Error(data.message || "Erro ao limpar fila");
+      // Apenas tenta parsear JSON se houver conteúdo
+      let errorMessage = "Erro ao limpar fila";
+      if (
+        response.status !== 204 &&
+        response.headers.get("content-length") !== "0"
+      ) {
+        try {
+          const data = await response.json();
+          errorMessage = data.message || errorMessage;
+        } catch (e) {
+          // Ignora erro de parse, usa mensagem padrão
+        }
+      }
+      throw new Error(errorMessage);
     }
 
-    console.log(`✅ [QUEUE] Fila limpa com sucesso`);
+    console.log(
+      `✅ [QUEUE] Fila limpa com sucesso (status ${response.status})`
+    );
 
     return {
       success: true,
