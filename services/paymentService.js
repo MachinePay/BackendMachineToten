@@ -98,16 +98,6 @@ export async function createCardPayment(paymentData, storeConfig) {
       `💳 [CARD] Criando pagamento de R$ ${amount} (Device: ${mp_device_id})`
     );
 
-    // 🧹 Limpar fila ANTES de criar novo pagamento (evita erro 2205)
-    try {
-      await clearPaymentQueue(storeConfig);
-    } catch (queueError) {
-      console.warn(
-        "⚠️ [CARD] Erro ao limpar fila (continua):",
-        queueError.message
-      );
-    }
-
     const idempotencyKey = `card_${orderId}_${Date.now()}`;
 
     // Para Point Smart, usar a Point Integration API

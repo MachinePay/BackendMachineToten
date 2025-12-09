@@ -2023,15 +2023,15 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
             ) {
               console.log(`✅ PAGAMENTO CONFIRMADO COMO APROVADO!`);
 
-              // Limpa a intent da fila
+              // 🧹 Limpa a fila após aprovação
               try {
-                await fetch(intentUrl, {
-                  method: "DELETE",
-                  headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+                console.log(`🧹 Limpando fila após aprovação...`);
+                await paymentService.clearPaymentQueue({ 
+                  mp_access_token: MP_ACCESS_TOKEN, 
+                  mp_device_id: MP_DEVICE_ID 
                 });
-                console.log(`🧹 Intent ${paymentId} limpa da fila`);
-              } catch (e) {
-                console.log(`⚠️ Erro ao limpar intent: ${e.message}`);
+              } catch (queueError) {
+                console.warn(`⚠️ Erro ao limpar fila: ${queueError.message}`);
               }
 
               return res.json({
@@ -2050,6 +2050,17 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
               console.log(
                 `❌ PAGAMENTO REJEITADO/CANCELADO: ${paymentDetails.status}`
               );
+
+              // 🧹 Limpa a fila após rejeição
+              try {
+                console.log(`🧹 Limpando fila após rejeição...`);
+                await paymentService.clearPaymentQueue({ 
+                  mp_access_token: MP_ACCESS_TOKEN, 
+                  mp_device_id: MP_DEVICE_ID 
+                });
+              } catch (queueError) {
+                console.warn(`⚠️ Erro ao limpar fila: ${queueError.message}`);
+              }
 
               // Busca external_reference para liberar pedido
               const orderId = intent.additional_info?.external_reference;
@@ -2157,6 +2168,17 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
               : " (erro no processamento)"
           }`
         );
+
+        // 🧹 Limpa a fila após cancelamento/erro
+        try {
+          console.log(`🧹 Limpando fila após ${intent.state}...`);
+          await paymentService.clearPaymentQueue({ 
+            mp_access_token: MP_ACCESS_TOKEN, 
+            mp_device_id: MP_DEVICE_ID 
+          });
+        } catch (queueError) {
+          console.warn(`⚠️ Erro ao limpar fila: ${queueError.message}`);
+        }
 
         // --- LÓGICA DE CANCELAMENTO DO PEDIDO NO BANCO ---
         const orderId = intent.additional_info?.external_reference;
