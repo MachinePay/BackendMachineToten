@@ -443,6 +443,26 @@ app.get("/health", (req, res) =>
   res.status(200).json({ status: "ok", db: dbType })
 );
 
+// Endpoint de debug para verificar store_id
+app.get("/api/debug/store", (req, res) => {
+  const storeId = req.headers["x-store-id"] || req.query.storeId;
+  const host = req.headers.host;
+  const origin = req.headers.origin;
+
+  res.json({
+    storeId: storeId || "❌ NÃO ENVIADO",
+    host: host,
+    origin: origin,
+    headers: {
+      "x-store-id": req.headers["x-store-id"] || "❌ NÃO ENVIADO",
+      "user-agent": req.headers["user-agent"],
+    },
+    message: storeId
+      ? `✅ Store ID recebido: ${storeId}`
+      : "❌ Header x-store-id não foi enviado pelo frontend",
+  });
+});
+
 // Rota de teste do webhook (para verificar se está acessível)
 app.get("/api/webhooks/mercadopago", (req, res) => {
   console.log("📋 GET recebido no webhook - Teste manual ou verificação do MP");
