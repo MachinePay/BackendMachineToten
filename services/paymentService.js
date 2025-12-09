@@ -101,6 +101,15 @@ export async function createCardPayment(paymentData, storeConfig) {
     const idempotencyKey = `card_${orderId}_${Date.now()}`;
 
     // Para Point Smart, usar a Point Integration API
+    const payload = {
+      amount: Math.round(parseFloat(amount) * 100), // Centavos
+      description: description || "Pedido",
+      additional_info: {
+        external_reference: orderId,
+        print_on_terminal: true,
+      },
+    };
+
     const response = await fetch(
       `https://api.mercadopago.com/point/integration-api/devices/${mp_device_id}/payment-intents`,
       {
@@ -108,16 +117,8 @@ export async function createCardPayment(paymentData, storeConfig) {
         headers: {
           Authorization: `Bearer ${mp_access_token}`,
           "Content-Type": "application/json",
-          "X-Idempotency-Key": idempotencyKey,
         },
-        body: JSON.stringify({
-          amount: parseFloat(amount),
-          description: description || "Pedido",
-          external_reference: orderId,
-          notification_url: `${
-            process.env.FRONTEND_URL || "https://backendkioskpro.onrender.com"
-          }/api/notifications/mercadopago`,
-        }),
+        body: JSON.stringify(payload),
       }
     );
 
