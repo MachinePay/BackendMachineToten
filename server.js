@@ -6,6 +6,7 @@ import OpenAI from "openai";
 import knex from "knex";
 import jwt from "jsonwebtoken";
 import { createClient } from "redis";
+import paymentRoutes from "./routes/payment.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -261,6 +262,44 @@ async function initDatabase() {
     console.log("✅ Tabela 'categories' criada com sucesso");
   }
 
+  // ========== TABELA DE STORES (Credenciais Multi-tenant Mercado Pago) ==========
+  if (!(await db.schema.hasTable("stores"))) {
+    await db.schema.createTable("stores", (table) => {
+      table.string("id").primary();
+      table.string("name").notNullable();
+      table.string("mp_access_token"); // Access Token do Mercado Pago
+      table.string("mp_device_id"); // Device ID para Point/PDV
+      table.timestamp("created_at").defaultTo(db.fn.now());
+    });
+    console.log("✅ Tabela 'stores' criada com sucesso");
+
+    // Criar loja padrão com credenciais do .env
+    const defaultStore = {
+      id: "loja-padrao",
+      name: "Loja Padrão",
+      mp_access_token: MP_ACCESS_TOKEN || null,
+      mp_device_id: MP_DEVICE_ID || null,
+    };
+
+    await db("stores").insert(defaultStore);
+    console.log("✅ [MULTI-TENANT] Loja padrão criada com credenciais do .env");
+  } else {
+    // Verifica se loja padrão existe, se não cria
+    const defaultExists = await db("stores")
+      .where({ id: "loja-padrao" })
+      .first();
+    if (!defaultExists) {
+      const defaultStore = {
+        id: "loja-padrao",
+        name: "Loja Padrão",
+        mp_access_token: MP_ACCESS_TOKEN || null,
+        mp_device_id: MP_DEVICE_ID || null,
+      };
+      await db("stores").insert(defaultStore);
+      console.log("✅ [MULTI-TENANT] Loja padrão criada (migração)");
+    }
+  }
+
   // ========== MULTI-TENANCY: Adiciona store_id nas tabelas ==========
 
   console.log(
@@ -385,6 +424,9 @@ app.use(
   })
 );
 app.use(express.json());
+
+// --- Rotas de Pagamento Multi-tenant ---
+app.use("/api/payment", paymentRoutes);
 
 // --- Rotas Básicas ---
 app.get("/", (req, res) => {
@@ -1590,6 +1632,21 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
   }
 });
 
+// ============================================================================
+// ⚠️ DEPRECATED: Endpoints de pagamento antigos (sem Multi-tenancy)
+// ============================================================================
+// ESTES ENDPOINTS FORAM REFATORADOS PARA:
+// - services/paymentService.js (lógica de negócio)
+// - controllers/paymentController.js (validação e controle)
+// - routes/payment.js (rotas com middleware resolveStore)
+//
+// Agora cada loja usa suas próprias credenciais do Mercado Pago (mp_access_token, mp_device_id)
+// Os novos endpoints estão em: /api/payment/* e exigem header x-store-id
+//
+// MANTER COMENTADO PARA REFERÊNCIA - REMOVER APÓS VALIDAÇÃO EM PRODUÇÃO
+// ============================================================================
+
+/* DEPRECATED - Usar /api/payment/create-pix com x-store-id header
 // --- INTEGRAÇÃO MERCADO PAGO POINT (Orders API Unificada) ---
 
 // CRIAR PAGAMENTO PIX (QR Code na tela)
@@ -2496,6 +2553,11 @@ app.post("/api/payment/clear-queue", async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+*/
+
+// ============================================================================
+// FIM DA SEÇÃO DEPRECATED
+// ============================================================================
 
 // --- Rotas de IA ---
 
