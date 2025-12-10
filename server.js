@@ -1198,6 +1198,9 @@ app.get(
 app.post("/api/orders", async (req, res) => {
   const { userId, userName, items, total, paymentId, observation } = req.body;
 
+  console.log(`📥 [POST /api/orders] storeId recebido: ${req.storeId}`);
+  console.log(`📥 [POST /api/orders] Headers:`, req.headers["x-store-id"]);
+
   const newOrder = {
     id: `order_${Date.now()}`,
     userId,
@@ -1213,9 +1216,11 @@ app.post("/api/orders", async (req, res) => {
     store_id: req.storeId, // MULTI-TENANCY: Associa pedido à loja
   };
 
-  try {
-    console.log(`📦 Criando pedido ${newOrder.id}...`);
+  console.log(
+    `📦 Criando pedido ${newOrder.id} para loja: ${newOrder.store_id}`
+  );
 
+  try {
     // Garante que o usuário existe (para convidados)
     const userExists = await db("users").where({ id: userId }).first();
     if (!userExists) {
