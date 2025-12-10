@@ -1843,9 +1843,8 @@ app.post("/api/payment/create-pix", async (req, res) => {
       description: description || `Pedido ${orderId}`,
       payment_method_id: "pix",
       external_reference: orderId,
-      notification_url: `${
-        process.env.FRONTEND_URL || "https://backendkioskpro.onrender.com"
-      }/api/notifications/mercadopago`,
+      notification_url:
+        "https://backendkioskpro.onrender.com/api/notifications/mercadopago",
       payer: {
         email: "cliente@kiosk.com",
       },
