@@ -1154,9 +1154,9 @@ app.get(
     try {
       const storeId = req.storeId;
 
-      // 🔒 IMPORTANTE: Só retorna pedidos com status "active" E pagamento confirmado DA LOJA
+      // 🔒 IMPORTANTE: Só retorna pedidos pagos e ativos (active ou preparing) DA LOJA
       let query = db("orders")
-        .where({ status: "active" })
+        .whereIn("status", ["active", "preparing"])
         .whereIn("paymentStatus", ["paid", "authorized"])
         .orderBy("timestamp", "asc");
 
@@ -1649,6 +1649,27 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
             payment.status === "approved" ||
             payment.status === "authorized"
           ) {
+            // Atualiza pedido no banco
+            if (orderId) {
+              try {
+                const order = await db("orders").where({ id: orderId }).first();
+                if (order && order.paymentStatus === "pending") {
+                  await db("orders").where({ id: orderId }).update({
+                    paymentStatus: "paid",
+                    status: "preparing",
+                  });
+                  console.log(
+                    `✅ Pedido ${orderId} marcado como PAGO via IPN Card`
+                  );
+                }
+              } catch (dbError) {
+                console.error(
+                  `❌ Erro ao atualizar pedido ${orderId}:`,
+                  dbError.message
+                );
+              }
+            }
+
             // Limpa a fila
             try {
               await paymentService.clearPaymentQueue(storeConfig);
@@ -1680,6 +1701,50 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
             payment.status === "cancelled" ||
             payment.status === "refunded"
           ) {
+            // Cancela o pedido no banco
+            if (orderId) {
+              try {
+                const order = await db("orders").where({ id: orderId }).first();
+                if (order && order.paymentStatus === "pending") {
+                  // Libera estoque
+                  const items = parseJSON(order.items);
+                  for (const item of items) {
+                    const product = await db("products")
+                      .where({ id: item.id })
+                      .first();
+                    if (
+                      product &&
+                      product.stock !== null &&
+                      product.stock_reserved > 0
+                    ) {
+                      const newReserved = Math.max(
+                        0,
+                        product.stock_reserved - item.quantity
+                      );
+                      await db("products")
+                        .where({ id: item.id })
+                        .update({ stock_reserved: newReserved });
+                      console.log(
+                        `↩️ Estoque liberado: ${item.name} (${product.stock_reserved} -> ${newReserved})`
+                      );
+                    }
+                  }
+
+                  // Atualiza pedido
+                  await db("orders").where({ id: orderId }).update({
+                    paymentStatus: "canceled",
+                    status: "canceled",
+                  });
+                  console.log(`✅ Pedido ${orderId} cancelado via IPN Card`);
+                }
+              } catch (dbError) {
+                console.error(
+                  `❌ Erro ao cancelar pedido ${orderId}:`,
+                  dbError.message
+                );
+              }
+            }
+
             // Limpa a fila
             try {
               await paymentService.clearPaymentQueue(storeConfig);
