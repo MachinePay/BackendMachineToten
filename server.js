@@ -3306,12 +3306,15 @@ let kitchenCache = {
 };
 
 app.get("/api/ai/kitchen-priority", async (req, res) => {
+  const storeId = req.storeId; // 🏪 MULTI-TENANT
+  console.log(`🍳 [GET /api/ai/kitchen-priority] storeId: ${storeId}`);
+
   if (!openai) {
     console.log("❌ OpenAI não inicializada - retornando ordem padrão");
     // Se IA indisponível, retorna ordem cronológica normal
     try {
       const orders = await db("orders")
-        .where({ status: "active" })
+        .where({ status: "active", store_id: storeId }) // 🏪 Filtro multi-tenant
         .orderBy("timestamp", "asc")
         .select("*");
 
@@ -3329,7 +3332,7 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
     // 1. Busca pedidos ativos (não finalizados) - ORDENADOS DO MAIS ANTIGO PARA O MAIS RECENTE
     // Esta é a ordem BASE (FIFO) que a IA deve respeitar ao otimizar
     const orders = await db("orders")
-      .where({ status: "active" })
+      .where({ status: "active", store_id: storeId }) // 🏪 Filtro multi-tenant
       .orderBy("timestamp", "asc") // ASC = Mais antigo primeiro (CORRETO!)
       .select("*");
 
@@ -3372,7 +3375,9 @@ app.get("/api/ai/kitchen-priority", async (req, res) => {
     console.log(`📋 ${orders.length} pedido(s) na fila`);
 
     // 2. Busca informações dos produtos para calcular complexidade
-    const products = await db("products").select("*");
+    const products = await db("products")
+      .where({ store_id: storeId }) // 🏪 Filtro multi-tenant
+      .select("*");
     const productMap = {};
     products.forEach((p) => {
       productMap[p.id] = p;
