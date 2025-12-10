@@ -1835,60 +1835,67 @@ app.post("/api/payment/create-pix", async (req, res) => {
   try {
     console.log(`💚 Criando pagamento PIX (QR Code) de R$ ${amount}...`);
 
-    const orderPayload = {
-      type: "online", // QR Code exibido na tela
+    const paymentPayload = {
       transaction_amount: parseFloat(amount),
       description: description || `Pedido ${orderId}`,
+      payment_method_id: "pix",
       external_reference: orderId,
       notification_url: `${
         process.env.FRONTEND_URL || "https://backendkioskpro.onrender.com"
       }/api/notifications/mercadopago`,
-      payment_methods: {
-        excluded_payment_types: [
-          { id: "credit_card" },
-          { id: "debit_card" },
-          { id: "ticket" },
-          { id: "bank_transfer" },
-        ],
-        installments: 1,
+      payer: {
+        email: "cliente@kiosk.com",
       },
     };
 
     // Gera chave idempotente única para esta transação PIX
     const idempotencyKey = `pix_${orderId}_${Date.now()}`;
 
-    const response = await fetch("https://api.mercadopago.com/v1/orders", {
+    const response = await fetch("https://api.mercadopago.com/v1/payments", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
         "Content-Type": "application/json",
-        "X-Idempotency-Key": idempotencyKey, // ← OBRIGATÓRIO
+        "X-Idempotency-Key": idempotencyKey,
       },
-      body: JSON.stringify(orderPayload),
+      body: JSON.stringify(paymentPayload),
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("Erro ao criar order PIX:", data);
+      console.error("Erro ao criar pagamento PIX:", data);
       throw new Error(data.message || "Erro ao criar PIX");
     }
 
-    console.log(`✅ PIX criado! Order ID: ${data.id}`);
-    console.log(`📱 QR Code: ${data.qr_code}`);
+    console.log(`✅ PIX criado! Payment ID: ${data.id}`);
+    console.log(
+      `📱 QR Code: ${data.point_of_interaction?.transaction_data?.qr_code}`
+    );
 
     res.json({
       id: data.id,
-      status: "pending",
-      qr_code: data.qr_code,
-      qr_code_base64: data.qr_code_base64,
-      ticket_url: data.ticket_url,
+      status: data.status || "pending",
+      qr_code: data.point_of_interaction?.transaction_data?.qr_code,
+      qr_code_base64:
+        data.point_of_interaction?.transaction_data?.qr_code_base64,
+      ticket_url: data.point_of_interaction?.transaction_data?.ticket_url,
       type: "pix",
     });
   } catch (error) {
     console.error("Erro ao criar PIX:", error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Endpoint legado para compatibilidade - redireciona para create-card
+app.post("/api/payment/create", async (req, res) => {
+  console.log(
+    "⚠️ Endpoint legado /api/payment/create chamado - redirecionando para /create-card"
+  );
+  // Encaminha a requisição para o handler correto
+  req.url = "/api/payment/create-card";
+  return app._router.handle(req, res);
 });
 
 // ==========================================
