@@ -1174,6 +1174,14 @@ app.get(
         } pedido(s) PAGOS na fila`
       );
 
+      // Log detalhado dos pedidos retornados
+      if (orders.length > 0) {
+        console.log(
+          `📋 IDs dos pedidos:`,
+          orders.map((o) => `${o.id} (store_id: ${o.store_id})`).join(", ")
+        );
+      }
+
       res.json(
         orders.map((o) => ({
           ...o,
@@ -1378,6 +1386,17 @@ app.delete(
     try {
       const storeId = req.storeId;
 
+      console.log(`🗑️ DELETE pedido ${req.params.id} da loja ${storeId}`);
+
+      // Primeiro verifica se o pedido existe (sem filtro de loja)
+      const orderExists = await db("orders")
+        .where({ id: req.params.id })
+        .first();
+      console.log(
+        `📦 Pedido existe?`,
+        orderExists ? `SIM (store_id: ${orderExists.store_id})` : "NÃO"
+      );
+
       let query = db("orders").where({ id: req.params.id });
 
       // Filtra por loja se storeId estiver presente
@@ -1388,10 +1407,17 @@ app.delete(
       const order = await query.first();
 
       if (!order) {
+        console.log(`❌ Pedido não encontrado com filtro de loja ${storeId}`);
         return res
           .status(404)
           .json({ error: "Pedido não encontrado nesta loja" });
       }
+
+      console.log(`✅ Pedido encontrado:`, {
+        id: order.id,
+        store_id: order.store_id,
+        status: order.status,
+      });
 
       // Se estava pendente, libera a reserva de estoque
       if (order.paymentStatus === "pending") {
