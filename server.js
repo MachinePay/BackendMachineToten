@@ -1447,22 +1447,41 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
     if (topic === "point_integration_ipn" && id) {
       console.log(`📨 Processando IPN do Point: ${id}`);
 
-      // Busca detalhes do Payment Intent
-      const intentUrl = `https://api.mercadopago.com/point/integration-api/payment-intents/${id}`;
-      const intentResp = await fetch(intentUrl, {
-        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-      });
+      // Precisa buscar com todas as lojas possíveis (tenta todas)
+      const stores = await db("stores").select("*");
+      
+      let intent = null;
+      let storeConfig = null;
 
-      if (!intentResp.ok) {
-        console.error(
-          `❌ Erro ao buscar Payment Intent ${id}: ${intentResp.status}`
-        );
+      // Tenta buscar o Payment Intent com cada loja
+      for (const store of stores) {
+        try {
+          const intentUrl = `https://api.mercadopago.com/point/integration-api/payment-intents/${id}`;
+          const intentResp = await fetch(intentUrl, {
+            headers: { Authorization: `Bearer ${store.mp_access_token}` },
+          });
+
+          if (intentResp.ok) {
+            intent = await intentResp.json();
+            storeConfig = {
+              id: store.id,
+              mp_access_token: store.mp_access_token,
+              mp_device_id: store.mp_device_id,
+            };
+            console.log(`✅ Payment Intent encontrado na loja: ${store.name} (${store.id})`);
+            break;
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+
+      if (!intent || !storeConfig) {
+        console.error(`❌ Payment Intent ${id} não encontrado em nenhuma loja`);
         return;
       }
 
-      const intent = await intentResp.json();
       console.log(`💳 Payment Intent ${id} | State: ${intent.state}`);
-
       const orderId = intent.additional_info?.external_reference;
 
       // Se foi cancelado, já processa aqui
@@ -1471,10 +1490,7 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
 
         // Limpa a fila
         try {
-          await paymentService.clearPaymentQueue({
-            mp_access_token: MP_ACCESS_TOKEN,
-            mp_device_id: MP_DEVICE_ID,
-          });
+          await paymentService.clearPaymentQueue(storeConfig);
           console.log(`🧹 Fila limpa após cancelamento via IPN`);
         } catch (e) {
           console.warn(`⚠️ Erro ao limpar fila: ${e.message}`);
@@ -1533,7 +1549,7 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
 
         const paymentUrl = `https://api.mercadopago.com/v1/payments/${paymentId}`;
         const paymentResp = await fetch(paymentUrl, {
-          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          headers: { Authorization: `Bearer ${storeConfig.mp_access_token}` },
         });
 
         if (paymentResp.ok) {
@@ -1546,10 +1562,7 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
           ) {
             // Limpa a fila
             try {
-              await paymentService.clearPaymentQueue({
-                mp_access_token: MP_ACCESS_TOKEN,
-                mp_device_id: MP_DEVICE_ID,
-              });
+              await paymentService.clearPaymentQueue(storeConfig);
               console.log(`🧹 Fila limpa após aprovação via IPN`);
             } catch (e) {
               console.warn(`⚠️ Erro ao limpar fila: ${e.message}`);
@@ -1580,10 +1593,7 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
           ) {
             // Limpa a fila
             try {
-              await paymentService.clearPaymentQueue({
-                mp_access_token: MP_ACCESS_TOKEN,
-                mp_device_id: MP_DEVICE_ID,
-              });
+              await paymentService.clearPaymentQueue(storeConfig);
               console.log(`🧹 Fila limpa após rejeição via IPN`);
             } catch (e) {
               console.warn(`⚠️ Erro ao limpar fila: ${e.message}`);
@@ -2105,17 +2115,43 @@ app.post("/api/payment/create", async (req, res) => {
 // Verificar status PAGAMENTO (híbrido: Order PIX ou Payment Intent Point)
 app.get("/api/payment/status/:paymentId", async (req, res) => {
   const { paymentId } = req.params;
+  const storeId = req.storeId; // Do middleware
 
   if (paymentId.startsWith("mock_")) return res.json({ status: "approved" });
-  if (!MP_ACCESS_TOKEN) return res.status(500).json({ error: "Sem token MP" });
 
   try {
-    console.log(`🔍 Verificando status do pagamento: ${paymentId}`);
+    console.log(`🔍 [STATUS] Verificando pagamento: ${paymentId} (loja: ${storeId})`);
+
+    // Busca credenciais da loja
+    let storeConfig;
+    if (storeId) {
+      const store = await db("stores").where({ id: storeId }).first();
+      if (store) {
+        storeConfig = {
+          mp_access_token: store.mp_access_token,
+          mp_device_id: store.mp_device_id,
+        };
+        console.log(`✅ [STATUS] Usando credenciais da loja ${storeId}`);
+      }
+    }
+
+    // Fallback para credenciais globais (backwards compatibility)
+    if (!storeConfig) {
+      console.warn(`⚠️ [STATUS] Loja não encontrada, usando credenciais globais`);
+      storeConfig = {
+        mp_access_token: MP_ACCESS_TOKEN,
+        mp_device_id: MP_DEVICE_ID,
+      };
+    }
+
+    if (!storeConfig.mp_access_token) {
+      return res.status(500).json({ error: "Credenciais MP não configuradas" });
+    }
 
     // 1. Tenta buscar como Payment Intent (Point Integration API)
     const intentUrl = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
     const intentResponse = await fetch(intentUrl, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${storeConfig.mp_access_token}` },
     });
 
     if (intentResponse.ok) {
@@ -2148,10 +2184,7 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
               // 🧹 Limpa a fila após aprovação
               try {
                 console.log(`🧹 Limpando fila após aprovação...`);
-                await paymentService.clearPaymentQueue({ 
-                  mp_access_token: MP_ACCESS_TOKEN, 
-                  mp_device_id: MP_DEVICE_ID 
-                });
+                await paymentService.clearPaymentQueue(storeConfig);
               } catch (queueError) {
                 console.warn(`⚠️ Erro ao limpar fila: ${queueError.message}`);
               }
@@ -2176,10 +2209,7 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
               // 🧹 Limpa a fila após rejeição
               try {
                 console.log(`🧹 Limpando fila após rejeição...`);
-                await paymentService.clearPaymentQueue({ 
-                  mp_access_token: MP_ACCESS_TOKEN, 
-                  mp_device_id: MP_DEVICE_ID 
-                });
+                await paymentService.clearPaymentQueue(storeConfig);
               } catch (queueError) {
                 console.warn(`⚠️ Erro ao limpar fila: ${queueError.message}`);
               }
@@ -2294,10 +2324,7 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
         // 🧹 Limpa a fila após cancelamento/erro
         try {
           console.log(`🧹 Limpando fila após ${intent.state}...`);
-          await paymentService.clearPaymentQueue({ 
-            mp_access_token: MP_ACCESS_TOKEN, 
-            mp_device_id: MP_DEVICE_ID 
-          });
+          await paymentService.clearPaymentQueue(storeConfig);
         } catch (queueError) {
           console.warn(`⚠️ Erro ao limpar fila: ${queueError.message}`);
         }
