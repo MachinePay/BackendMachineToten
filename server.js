@@ -1323,7 +1323,14 @@ app.put("/api/orders/:id", async (req, res) => {
       const items = parseJSON(order.items);
 
       for (const item of items) {
-        const product = await db("products").where({ id: item.id }).first();
+        let productQuery = db("products").where({ id: item.id });
+
+        // Filtra por loja se storeId estiver presente
+        if (storeId) {
+          productQuery = productQuery.where({ storeId: storeId });
+        }
+
+        const product = await productQuery.first();
 
         if (product && product.stock !== null) {
           // Deduz do estoque real e libera da reserva
