@@ -153,13 +153,117 @@ export async function createCardPayment(paymentData, storeConfig) {
  * @returns {Promise<Object>} Status do pagamento
  */
 export async function checkPaymentStatus(paymentId, storeConfig) {
-  const { mp_access_token } = storeConfig;
+  const { mp_access_token, mp_device_id } = storeConfig;
 
   if (!mp_access_token) {
     throw new Error("Access Token não configurado");
   }
 
   try {
+    console.log(`🔍 [STATUS] Verificando pagamento: ${paymentId}`);
+
+    // Tenta buscar como Payment Intent (Point Integration API)
+    const intentUrl = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentId}`;
+    const intentResponse = await fetch(intentUrl, {
+      headers: { Authorization: `Bearer ${mp_access_token}` },
+    });
+
+    if (intentResponse.ok) {
+      // É um Payment Intent (maquininha)
+      const intent = await intentResponse.json();
+      console.log(`💳 Payment Intent ${paymentId} | State: ${intent.state}`);
+
+      // Se tem payment.id, busca o pagamento real
+      if (intent.payment && intent.payment.id) {
+        const realPaymentId = intent.payment.id;
+        console.log(`✅ Payment Intent tem Payment ID: ${realPaymentId}`);
+
+        const paymentDetailsUrl = `https://api.mercadopago.com/v1/payments/${realPaymentId}`;
+        const paymentDetailsResp = await fetch(paymentDetailsUrl, {
+          headers: { Authorization: `Bearer ${mp_access_token}` },
+        });
+
+        if (paymentDetailsResp.ok) {
+          const paymentDetails = await paymentDetailsResp.json();
+
+          if (
+            paymentDetails.status === "approved" ||
+            paymentDetails.status === "authorized"
+          ) {
+            // Limpa a fila após confirmação
+            try {
+              await clearPaymentQueue(storeConfig);
+              console.log(`🧹 Fila limpa após aprovação`);
+            } catch (e) {
+              console.warn(`⚠️ Erro ao limpar fila: ${e.message}`);
+            }
+
+            return {
+              status: "approved",
+              paymentId: realPaymentId,
+              paymentStatus: paymentDetails.status,
+              transaction_amount: paymentDetails.transaction_amount,
+              external_reference: paymentDetails.external_reference,
+            };
+          }
+
+          if (
+            paymentDetails.status === "rejected" ||
+            paymentDetails.status === "cancelled" ||
+            paymentDetails.status === "refunded"
+          ) {
+            // Limpa a fila após rejeição
+            try {
+              await clearPaymentQueue(storeConfig);
+              console.log(`🧹 Fila limpa após rejeição`);
+            } catch (e) {
+              console.warn(`⚠️ Erro ao limpar fila: ${e.message}`);
+            }
+
+            return {
+              status: "rejected",
+              paymentId: realPaymentId,
+              paymentStatus: paymentDetails.status,
+              reason: "rejected_by_terminal",
+              orderId: intent.additional_info?.external_reference,
+            };
+          }
+
+          return {
+            status: "pending",
+            paymentId: realPaymentId,
+            paymentStatus: paymentDetails.status,
+          };
+        }
+      }
+
+      // Se foi cancelado
+      if (intent.state === "CANCELED" || intent.state === "ERROR") {
+        // Limpa a fila
+        try {
+          await clearPaymentQueue(storeConfig);
+          console.log(`🧹 Fila limpa após cancelamento`);
+        } catch (e) {
+          console.warn(`⚠️ Erro ao limpar fila: ${e.message}`);
+        }
+
+        return {
+          status: "canceled",
+          reason:
+            intent.state === "CANCELED" ? "canceled_by_user" : "payment_error",
+          orderId: intent.additional_info?.external_reference,
+          message:
+            intent.state === "CANCELED"
+              ? "Pagamento cancelado na maquininha"
+              : "Erro ao processar pagamento",
+        };
+      }
+
+      // Ainda pendente
+      return { status: "pending" };
+    }
+
+    // Não é Payment Intent, tenta buscar como pagamento PIX normal
     const response = await fetch(
       `https://api.mercadopago.com/v1/payments/${paymentId}`,
       {
