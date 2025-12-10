@@ -1449,7 +1449,7 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
 
       // Precisa buscar com todas as lojas possíveis (tenta todas)
       const stores = await db("stores").select("*");
-      
+
       let intent = null;
       let storeConfig = null;
 
@@ -1468,7 +1468,9 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
               mp_access_token: store.mp_access_token,
               mp_device_id: store.mp_device_id,
             };
-            console.log(`✅ Payment Intent encontrado na loja: ${store.name} (${store.id})`);
+            console.log(
+              `✅ Payment Intent encontrado na loja: ${store.name} (${store.id})`
+            );
             break;
           }
         } catch (e) {
