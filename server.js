@@ -1630,17 +1630,113 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
       return;
     }
 
-    // Fallback: outros topics (payment PIX antigo)
+    // Fallback: payment PIX
     if (topic === "payment" && id) {
       console.log(`📨 Processando IPN de pagamento PIX: ${id}`);
-      const urlPayment = `https://api.mercadopago.com/v1/payments/${id}`;
-      const respPayment = await fetch(urlPayment, {
-        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-      });
-      const payment = await respPayment.json();
+
+      // Tenta buscar com todas as lojas possíveis
+      const stores = await db("stores").select("*");
+      let payment = null;
+      let storeUsed = null;
+
+      for (const store of stores) {
+        try {
+          const urlPayment = `https://api.mercadopago.com/v1/payments/${id}`;
+          const respPayment = await fetch(urlPayment, {
+            headers: { Authorization: `Bearer ${store.mp_access_token}` },
+          });
+
+          if (respPayment.ok) {
+            payment = await respPayment.json();
+            storeUsed = store;
+            console.log(
+              `✅ Pagamento PIX encontrado na loja: ${store.name} (${store.id})`
+            );
+            break;
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+
+      if (!payment) {
+        console.error(`❌ Pagamento PIX ${id} não encontrado em nenhuma loja`);
+        return;
+      }
+
+      console.log(`💚 Pagamento PIX ${id} | Status: ${payment.status}`);
 
       if (payment.status === "approved") {
-        console.log(`✅ Pagamento PIX ${id} aprovado via IPN`);
+        console.log(`✅ Pagamento PIX ${id} APROVADO via IPN!`);
+
+        // Atualiza pedido no banco
+        const orderId = payment.external_reference;
+        if (orderId) {
+          try {
+            const order = await db("orders").where({ id: orderId }).first();
+            if (order && order.paymentStatus === "pending") {
+              await db("orders").where({ id: orderId }).update({
+                paymentStatus: "paid",
+                status: "preparing",
+              });
+              console.log(`✅ Pedido ${orderId} marcado como PAGO via IPN PIX`);
+            }
+          } catch (dbError) {
+            console.error(
+              `❌ Erro ao atualizar pedido ${orderId}:`,
+              dbError.message
+            );
+          }
+        }
+      } else if (
+        payment.status === "cancelled" ||
+        payment.status === "rejected"
+      ) {
+        console.log(
+          `❌ Pagamento PIX ${id} ${payment.status.toUpperCase()} via IPN`
+        );
+
+        // Cancela pedido e libera estoque
+        const orderId = payment.external_reference;
+        if (orderId) {
+          try {
+            const order = await db("orders").where({ id: orderId }).first();
+            if (order && order.paymentStatus === "pending") {
+              // Libera estoque
+              const items = parseJSON(order.items);
+              for (const item of items) {
+                const product = await db("products")
+                  .where({ id: item.id })
+                  .first();
+                if (
+                  product &&
+                  product.stock !== null &&
+                  product.stock_reserved > 0
+                ) {
+                  const newReserved = Math.max(
+                    0,
+                    product.stock_reserved - item.quantity
+                  );
+                  await db("products")
+                    .where({ id: item.id })
+                    .update({ stock_reserved: newReserved });
+                  console.log(`↩️ Estoque liberado: ${item.name}`);
+                }
+              }
+
+              await db("orders").where({ id: orderId }).update({
+                paymentStatus: "canceled",
+                status: "canceled",
+              });
+              console.log(`✅ Pedido ${orderId} cancelado via IPN PIX`);
+            }
+          } catch (dbError) {
+            console.error(
+              `❌ Erro ao cancelar pedido ${orderId}:`,
+              dbError.message
+            );
+          }
+        }
       }
       return;
     }
