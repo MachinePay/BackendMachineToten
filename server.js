@@ -3648,7 +3648,7 @@ app.get("/api/super-admin/dashboard", async (req, res) => {
 });
 
 // 🔧 ENDPOINT TEMPORÁRIO: Atualizar credenciais do sushiman1
-app.post("/api/admin/update-sushiman1-credentials", async (req, res) => {
+app.get("/api/admin/update-sushiman1-credentials", async (req, res) => {
   try {
     console.log("🔧 Atualizando credenciais da loja sushiman1...");
 
