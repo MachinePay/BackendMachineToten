@@ -7,6 +7,7 @@ import knex from "knex";
 import jwt from "jsonwebtoken";
 import { createClient } from "redis";
 import paymentRoutes from "./routes/payment.js";
+import * as paymentService from "./services/paymentService.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -1800,12 +1801,30 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
 // MANTER COMENTADO PARA REFERÊNCIA - REMOVER APÓS VALIDAÇÃO EM PRODUÇÃO
 // ============================================================================
 
-/* DEPRECATED - Usar /api/payment/create-pix com x-store-id header
-// --- INTEGRAÇÃO MERCADO PAGO POINT (Orders API Unificada) ---
+// --- INTEGRAÇÃO MERCADO PAGO POINT (Orders API Unificada) - COM MULTI-TENANCY ---
 
 // CRIAR PAGAMENTO PIX (QR Code na tela)
-app.post("/api/payment/create-pix", async (req, res) => {
+app.post("/api/payment/create-pix-old", async (req, res) => {
   const { amount, description, orderId } = req.body;
+  const storeId = req.storeId; // Do middleware
+
+  // Busca credenciais da loja
+  let MP_ACCESS_TOKEN, MP_DEVICE_ID;
+  if (storeId) {
+    const store = await db("stores").where({ id: storeId }).first();
+    if (store) {
+      MP_ACCESS_TOKEN = store.mp_access_token;
+      MP_DEVICE_ID = store.mp_device_id;
+      console.log(`✅ Usando credenciais da loja ${storeId}`);
+    }
+  }
+
+  // Fallback para credenciais globais
+  if (!MP_ACCESS_TOKEN) {
+    MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
+    MP_DEVICE_ID = process.env.MP_DEVICE_ID;
+    console.warn("⚠️ Usando credenciais globais");
+  }
 
   if (!MP_ACCESS_TOKEN) {
     console.error("Faltam credenciais do Mercado Pago");
@@ -2122,7 +2141,9 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
   if (paymentId.startsWith("mock_")) return res.json({ status: "approved" });
 
   try {
-    console.log(`🔍 [STATUS] Verificando pagamento: ${paymentId} (loja: ${storeId})`);
+    console.log(
+      `🔍 [STATUS] Verificando pagamento: ${paymentId} (loja: ${storeId})`
+    );
 
     // Busca credenciais da loja
     let storeConfig;
@@ -2139,7 +2160,9 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
 
     // Fallback para credenciais globais (backwards compatibility)
     if (!storeConfig) {
-      console.warn(`⚠️ [STATUS] Loja não encontrada, usando credenciais globais`);
+      console.warn(
+        `⚠️ [STATUS] Loja não encontrada, usando credenciais globais`
+      );
       storeConfig = {
         mp_access_token: MP_ACCESS_TOKEN,
         mp_device_id: MP_DEVICE_ID,
@@ -2746,7 +2769,6 @@ app.post("/api/payment/clear-queue", async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
-*/
 
 // ============================================================================
 // FIM DA SEÇÃO DEPRECATED
