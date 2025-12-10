@@ -1987,7 +1987,7 @@ app.post("/api/payment/create-pix", async (req, res) => {
       `📱 QR Code: ${data.point_of_interaction?.transaction_data?.qr_code}`
     );
 
-    res.json({
+    const pixResponse = {
       id: data.id,
       status: data.status || "pending",
       qr_code: data.point_of_interaction?.transaction_data?.qr_code,
@@ -1995,7 +1995,13 @@ app.post("/api/payment/create-pix", async (req, res) => {
         data.point_of_interaction?.transaction_data?.qr_code_base64,
       ticket_url: data.point_of_interaction?.transaction_data?.ticket_url,
       type: "pix",
-    });
+    };
+
+    console.log(
+      `📤 Enviando resposta ao frontend:`,
+      JSON.stringify(pixResponse, null, 2)
+    );
+    res.json(pixResponse);
   } catch (error) {
     console.error("Erro ao criar PIX:", error);
     res.status(500).json({ error: error.message });
