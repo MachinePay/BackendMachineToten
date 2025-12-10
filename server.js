@@ -1834,6 +1834,9 @@ app.post("/api/payment/create-pix", async (req, res) => {
 
   try {
     console.log(`💚 Criando pagamento PIX (QR Code) de R$ ${amount}...`);
+    console.log(
+      `📦 Payload: amount=${amount}, orderId=${orderId}, storeId=${storeId}`
+    );
 
     const paymentPayload = {
       transaction_amount: parseFloat(amount),
@@ -1847,6 +1850,11 @@ app.post("/api/payment/create-pix", async (req, res) => {
         email: "cliente@kiosk.com",
       },
     };
+
+    console.log(
+      `📤 Enviando para MP:`,
+      JSON.stringify(paymentPayload, null, 2)
+    );
 
     // Gera chave idempotente única para esta transação PIX
     const idempotencyKey = `pix_${orderId}_${Date.now()}`;
@@ -1863,9 +1871,17 @@ app.post("/api/payment/create-pix", async (req, res) => {
 
     const data = await response.json();
 
+    console.log(
+      `📥 Resposta MP (status ${response.status}):`,
+      JSON.stringify(data, null, 2)
+    );
+
     if (!response.ok) {
-      console.error("Erro ao criar pagamento PIX:", data);
-      throw new Error(data.message || "Erro ao criar PIX");
+      console.error("❌ Erro ao criar pagamento PIX:", data);
+      return res.status(response.status).json({
+        error: data.message || "Erro ao criar PIX",
+        details: data,
+      });
     }
 
     console.log(`✅ PIX criado! Payment ID: ${data.id}`);
