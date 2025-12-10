@@ -1162,7 +1162,7 @@ app.get(
 
       // Filtra por loja se storeId estiver presente
       if (storeId) {
-        query = query.where({ storeId: storeId });
+        query = query.where({ store_id: storeId });
         console.log(`🍳 Cozinha: Filtrando pedidos da loja ${storeId}`);
       }
 
@@ -1295,7 +1295,7 @@ app.put("/api/orders/:id", async (req, res) => {
 
     // Filtra por loja se storeId estiver presente
     if (storeId) {
-      query = query.where({ storeId: storeId });
+      query = query.where({ store_id: storeId });
     }
 
     const order = await query.first();
@@ -1327,7 +1327,7 @@ app.put("/api/orders/:id", async (req, res) => {
 
         // Filtra por loja se storeId estiver presente
         if (storeId) {
-          productQuery = productQuery.where({ storeId: storeId });
+          productQuery = productQuery.where({ store_id: storeId });
         }
 
         const product = await productQuery.first();
@@ -1382,7 +1382,7 @@ app.delete(
 
       // Filtra por loja se storeId estiver presente
       if (storeId) {
-        query = query.where({ storeId: storeId });
+        query = query.where({ store_id: storeId });
       }
 
       const order = await query.first();
@@ -1406,7 +1406,7 @@ app.delete(
 
           // Filtra por loja se storeId estiver presente
           if (storeId) {
-            productQuery = productQuery.where({ storeId: storeId });
+            productQuery = productQuery.where({ store_id: storeId });
           }
 
           const product = await productQuery.first();
