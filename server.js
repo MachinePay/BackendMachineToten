@@ -547,6 +547,7 @@ const extractStoreId = (req, res, next) => {
     "/api/payment/create-pix", // Pagamentos: Criar PIX
     "/api/payment/create", // Pagamentos: Criar pagamento
     "/api/payment/clear-queue", // Pagamentos: Limpar fila
+    "/api/debug/orders", // DEBUG: Ver todos os pedidos
   ];
 
   // Extrai storeId SEMPRE (antes de validar qualquer coisa)
