@@ -1146,6 +1146,39 @@ app.post("/api/users", async (req, res) => {
   }
 });
 
+// ========== DEBUG: Endpoint temporário para ver TODOS os pedidos ==========
+app.get("/api/debug/orders", async (req, res) => {
+  try {
+    const allOrders = await db("orders")
+      .select("id", "status", "paymentStatus", "store_id", "timestamp")
+      .orderBy("timestamp", "desc")
+      .limit(20);
+
+    console.log(`🔍 [DEBUG] Total de pedidos no banco: ${allOrders.length}`);
+
+    const summary = {
+      total: allOrders.length,
+      porLoja: {},
+      porStatus: {},
+      pedidos: allOrders,
+    };
+
+    allOrders.forEach((order) => {
+      // Conta por loja
+      summary.porLoja[order.store_id] =
+        (summary.porLoja[order.store_id] || 0) + 1;
+
+      // Conta por status
+      const statusKey = `${order.status}/${order.paymentStatus}`;
+      summary.porStatus[statusKey] = (summary.porStatus[statusKey] || 0) + 1;
+    });
+
+    res.json(summary);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get(
   "/api/orders",
   authenticateToken,
