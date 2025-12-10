@@ -530,6 +530,7 @@ const extractStoreId = (req, res, next) => {
   const publicRoutes = [
     "/",
     "/health",
+    "/favicon.ico", // Favicon do navegador
     "/api/auth/login",
     "/api/webhooks/mercadopago",
     "/api/notifications/mercadopago",
