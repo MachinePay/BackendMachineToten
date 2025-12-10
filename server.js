@@ -1444,70 +1444,191 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
     res.status(200).send("OK");
 
     // Processa notificação em background
-    if (topic === "payment" && id) {
-      console.log(`📨 Processando IPN de pagamento: ${id}`);
+    if (topic === "point_integration_ipn" && id) {
+      console.log(`📨 Processando IPN do Point: ${id}`);
 
-      // Busca detalhes do pagamento
+      // Busca detalhes do Payment Intent
+      const intentUrl = `https://api.mercadopago.com/point/integration-api/payment-intents/${id}`;
+      const intentResp = await fetch(intentUrl, {
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+
+      if (!intentResp.ok) {
+        console.error(
+          `❌ Erro ao buscar Payment Intent ${id}: ${intentResp.status}`
+        );
+        return;
+      }
+
+      const intent = await intentResp.json();
+      console.log(`💳 Payment Intent ${id} | State: ${intent.state}`);
+
+      const orderId = intent.additional_info?.external_reference;
+
+      // Se foi cancelado, já processa aqui
+      if (intent.state === "CANCELED") {
+        console.log(`❌ Payment Intent CANCELADO via IPN`);
+
+        // Limpa a fila
+        try {
+          await paymentService.clearPaymentQueue({
+            mp_access_token: MP_ACCESS_TOKEN,
+            mp_device_id: MP_DEVICE_ID,
+          });
+          console.log(`🧹 Fila limpa após cancelamento via IPN`);
+        } catch (e) {
+          console.warn(`⚠️ Erro ao limpar fila: ${e.message}`);
+        }
+
+        // Cancela o pedido no banco
+        if (orderId) {
+          try {
+            const order = await db("orders").where({ id: orderId }).first();
+            if (order && order.paymentStatus === "pending") {
+              // Libera estoque
+              const items = parseJSON(order.items);
+              for (const item of items) {
+                const product = await db("products")
+                  .where({ id: item.id })
+                  .first();
+                if (
+                  product &&
+                  product.stock !== null &&
+                  product.stock_reserved > 0
+                ) {
+                  const newReserved = Math.max(
+                    0,
+                    product.stock_reserved - item.quantity
+                  );
+                  await db("products")
+                    .where({ id: item.id })
+                    .update({ stock_reserved: newReserved });
+                  console.log(
+                    `↩️ Estoque liberado: ${item.name} (${product.stock_reserved} -> ${newReserved})`
+                  );
+                }
+              }
+
+              // Atualiza pedido
+              await db("orders").where({ id: orderId }).update({
+                paymentStatus: "canceled",
+                status: "canceled",
+              });
+              console.log(`✅ Pedido ${orderId} cancelado via IPN`);
+            }
+          } catch (dbError) {
+            console.error(
+              `❌ Erro ao cancelar pedido ${orderId}:`,
+              dbError.message
+            );
+          }
+        }
+        return;
+      }
+
+      // Se tem payment.id, busca o pagamento real
+      if (intent.payment && intent.payment.id) {
+        const paymentId = intent.payment.id;
+        console.log(`💳 Buscando detalhes do pagamento real: ${paymentId}`);
+
+        const paymentUrl = `https://api.mercadopago.com/v1/payments/${paymentId}`;
+        const paymentResp = await fetch(paymentUrl, {
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        });
+
+        if (paymentResp.ok) {
+          const payment = await paymentResp.json();
+          console.log(`💳 Pagamento ${paymentId} | Status: ${payment.status}`);
+
+          if (
+            payment.status === "approved" ||
+            payment.status === "authorized"
+          ) {
+            // Limpa a fila
+            try {
+              await paymentService.clearPaymentQueue({
+                mp_access_token: MP_ACCESS_TOKEN,
+                mp_device_id: MP_DEVICE_ID,
+              });
+              console.log(`🧹 Fila limpa após aprovação via IPN`);
+            } catch (e) {
+              console.warn(`⚠️ Erro ao limpar fila: ${e.message}`);
+            }
+
+            const amountInCents = Math.round(payment.transaction_amount * 100);
+            const cacheKey = `amount_${amountInCents}`;
+
+            await cachePayment(cacheKey, {
+              paymentId: payment.id,
+              amount: payment.transaction_amount,
+              status: payment.status,
+              timestamp: Date.now(),
+            });
+
+            console.log(
+              `✅ Pagamento ${paymentId} confirmado via IPN! Valor: R$ ${payment.transaction_amount}`
+            );
+            console.log(
+              `ℹ️ External reference: ${
+                payment.external_reference || "não informado"
+              }`
+            );
+          } else if (
+            payment.status === "rejected" ||
+            payment.status === "cancelled" ||
+            payment.status === "refunded"
+          ) {
+            // Limpa a fila
+            try {
+              await paymentService.clearPaymentQueue({
+                mp_access_token: MP_ACCESS_TOKEN,
+                mp_device_id: MP_DEVICE_ID,
+              });
+              console.log(`🧹 Fila limpa após rejeição via IPN`);
+            } catch (e) {
+              console.warn(`⚠️ Erro ao limpar fila: ${e.message}`);
+            }
+
+            console.log(
+              `❌ Pagamento ${paymentId} REJEITADO via IPN! Status: ${payment.status}`
+            );
+            console.log(
+              `ℹ️ External reference: ${
+                payment.external_reference || "não informado"
+              }`
+            );
+
+            // Remove do cache se existir
+            const amountInCents = Math.round(payment.transaction_amount * 100);
+            const cacheKey = `amount_${amountInCents}`;
+            paymentCache.delete(cacheKey);
+            console.log(`🧹 Cache limpo para ${cacheKey}`);
+          } else {
+            console.log(
+              `⏳ Pagamento ${paymentId} com status: ${payment.status} - aguardando`
+            );
+          }
+        }
+      }
+      return;
+    }
+
+    // Fallback: outros topics (payment PIX antigo)
+    if (topic === "payment" && id) {
+      console.log(`📨 Processando IPN de pagamento PIX: ${id}`);
       const urlPayment = `https://api.mercadopago.com/v1/payments/${id}`;
       const respPayment = await fetch(urlPayment, {
         headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
       });
       const payment = await respPayment.json();
 
-      console.log(
-        `💳 Pagamento ${id} | Status: ${payment.status} | Valor: R$ ${payment.transaction_amount}`
-      );
-
-      // Processa status do pagamento
-      if (payment.status === "approved" || payment.status === "authorized") {
-        const amountInCents = Math.round(payment.transaction_amount * 100);
-        const cacheKey = `amount_${amountInCents}`;
-
-        await cachePayment(cacheKey, {
-          paymentId: payment.id,
-          amount: payment.transaction_amount,
-          status: payment.status,
-          timestamp: Date.now(),
-        });
-
-        console.log(
-          `✅ Pagamento ${id} confirmado via IPN! Valor: R$ ${payment.transaction_amount}`
-        );
-        console.log(
-          `ℹ️ External reference: ${
-            payment.external_reference || "não informado"
-          }`
-        );
-        console.log(
-          `ℹ️ Estoque já foi descontado no momento da criação do pedido (/api/orders)`
-        );
-      } else if (
-        payment.status === "rejected" ||
-        payment.status === "cancelled" ||
-        payment.status === "refunded"
-      ) {
-        console.log(
-          `❌ Pagamento ${id} REJEITADO/CANCELADO via IPN! Status: ${payment.status}`
-        );
-        console.log(
-          `ℹ️ External reference: ${
-            payment.external_reference || "não informado"
-          }`
-        );
-
-        // Remove do cache se existir
-        const amountInCents = Math.round(payment.transaction_amount * 100);
-        const cacheKey = `amount_${amountInCents}`;
-        paymentCache.delete(cacheKey);
-        console.log(`🧹 Cache limpo para ${cacheKey}`);
-      } else {
-        console.log(
-          `⏳ Pagamento ${id} com status: ${payment.status} - aguardando confirmação`
-        );
+      if (payment.status === "approved") {
+        console.log(`✅ Pagamento PIX ${id} aprovado via IPN`);
       }
-    } else {
-      console.log(`⚠️ IPN ignorado - Topic: ${topic}, ID: ${id}`);
+      return;
     }
+
+    console.log(`⚠️ IPN ignorado - Topic: ${topic}, ID: ${id}`);
   } catch (error) {
     console.error("❌ Erro processando IPN:", error.message);
   }
