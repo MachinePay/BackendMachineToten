@@ -427,7 +427,8 @@ app.use(
 app.use(express.json());
 
 // --- Rotas de Pagamento Multi-tenant ---
-app.use("/api/payment", paymentRoutes);
+// TEMPORARIAMENTE DESABILITADO - Usando rotas antigas funcionais (linhas 1807+)
+// app.use("/api/payment", paymentRoutes);
 
 // --- Rotas Básicas ---
 app.get("/", (req, res) => {
@@ -1804,7 +1805,7 @@ app.post("/api/webhooks/mercadopago", async (req, res) => {
 // --- INTEGRAÇÃO MERCADO PAGO POINT (Orders API Unificada) - COM MULTI-TENANCY ---
 
 // CRIAR PAGAMENTO PIX (QR Code na tela)
-app.post("/api/payment/create-pix-old", async (req, res) => {
+app.post("/api/payment/create-pix", async (req, res) => {
   const { amount, description, orderId } = req.body;
   const storeId = req.storeId; // Do middleware
 
@@ -1986,10 +1987,29 @@ app.get("/api/pix/status/:id", async (req, res) => {
 // ==========================================
 
 // CRIAR PAGAMENTO NA MAQUININHA (Point Integration API - volta ao original)
-app.post("/api/payment/create", async (req, res) => {
+app.post("/api/payment/create-card", async (req, res) => {
   const { amount, description, orderId, paymentMethod } = req.body;
+  const storeId = req.storeId; // Do middleware
 
-  // ✅ DETECÇÃO AUTOMÁTICA: Se for PIX, gera QR Code (Payments API)
+  // Busca credenciais da loja
+  let MP_ACCESS_TOKEN, MP_DEVICE_ID;
+  if (storeId) {
+    const store = await db("stores").where({ id: storeId }).first();
+    if (store) {
+      MP_ACCESS_TOKEN = store.mp_access_token;
+      MP_DEVICE_ID = store.mp_device_id;
+      console.log(`✅ Usando credenciais da loja ${storeId}`);
+    }
+  }
+
+  // Fallback para credenciais globais
+  if (!MP_ACCESS_TOKEN) {
+    MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
+    MP_DEVICE_ID = process.env.MP_DEVICE_ID;
+    console.warn("⚠️ Usando credenciais globais");
+  }
+
+  // ✅ DETECÇÃO AUTOMÁTICA: Se for PIX, gera QR Code (Payments API) - NÃO DEVERIA CHEGAR AQUI
   if (paymentMethod === "pix") {
     console.log(`🔀 PIX detectado - gerando QR Code (Payments API)`);
 
@@ -2193,7 +2213,7 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
         try {
           const paymentDetailsUrl = `https://api.mercadopago.com/v1/payments/${realPaymentId}`;
           const paymentDetailsResp = await fetch(paymentDetailsUrl, {
-            headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+            headers: { Authorization: `Bearer ${storeConfig.mp_access_token}` },
           });
 
           if (paymentDetailsResp.ok) {
@@ -2287,7 +2307,9 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
           try {
             const searchUrl = `https://api.mercadopago.com/v1/payments/search?external_reference=${orderId}`;
             const searchResp = await fetch(searchUrl, {
-              headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+              headers: {
+                Authorization: `Bearer ${storeConfig.mp_access_token}`,
+              },
             });
 
             if (searchResp.ok) {
@@ -2428,7 +2450,7 @@ app.get("/api/payment/status/:paymentId", async (req, res) => {
     console.log(`🔄 Não é Payment Intent, tentando como Payment PIX...`);
     const paymentUrl = `https://api.mercadopago.com/v1/payments/${paymentId}`;
     const paymentResponse = await fetch(paymentUrl, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${storeConfig.mp_access_token}` },
     });
 
     if (paymentResponse.ok) {
@@ -2482,8 +2504,26 @@ app.get("/api/payment/status-pix/:orderId", async (req, res) => {
 // Cancelar pagamento específico (Point Intent ou PIX Payment)
 app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
   const { paymentId } = req.params;
+  const storeId = req.storeId;
 
-  if (!MP_ACCESS_TOKEN) {
+  // Busca credenciais da loja
+  let MP_ACCESS_TOKEN_LOCAL, MP_DEVICE_ID_LOCAL;
+  if (storeId) {
+    const store = await db("stores").where({ id: storeId }).first();
+    if (store) {
+      MP_ACCESS_TOKEN_LOCAL = store.mp_access_token;
+      MP_DEVICE_ID_LOCAL = store.mp_device_id;
+      console.log(`✅ [CANCEL] Usando credenciais da loja ${storeId}`);
+    }
+  }
+
+  // Fallback para credenciais globais
+  if (!MP_ACCESS_TOKEN_LOCAL) {
+    MP_ACCESS_TOKEN_LOCAL = MP_ACCESS_TOKEN;
+    MP_DEVICE_ID_LOCAL = MP_DEVICE_ID;
+  }
+
+  if (!MP_ACCESS_TOKEN_LOCAL) {
     return res.json({ success: true, message: "Mock cancelado" });
   }
 
@@ -2491,13 +2531,13 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
     console.log(`🛑 Tentando cancelar pagamento: ${paymentId}`);
 
     // 1. Tenta cancelar como um Payment Intent da maquininha (Point)
-    if (MP_DEVICE_ID) {
-      const urlIntent = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents/${paymentId}`;
+    if (MP_DEVICE_ID_LOCAL) {
+      const urlIntent = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID_LOCAL}/payment-intents/${paymentId}`;
 
       console.log(`  -> Enviando DELETE para a maquininha: ${urlIntent}`);
       const intentResponse = await fetch(urlIntent, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN_LOCAL}` },
       });
 
       // Se a requisição foi bem-sucedida (200, 204) ou se o recurso não foi encontrado (404, já foi cancelado), consideramos sucesso.
@@ -2528,7 +2568,7 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
     const response = await fetch(urlPayment, {
       method: "PUT",
       headers: {
-        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        Authorization: `Bearer ${MP_ACCESS_TOKEN_LOCAL}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ status: "cancelled" }),
@@ -2553,16 +2593,35 @@ app.delete("/api/payment/cancel/:paymentId", async (req, res) => {
 
 // Limpar TODA a fila da maquininha (útil para logout/sair)
 app.post("/api/payment/clear-all", async (req, res) => {
-  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+  const storeId = req.storeId;
+
+  // Busca credenciais da loja
+  let MP_ACCESS_TOKEN_LOCAL, MP_DEVICE_ID_LOCAL;
+  if (storeId) {
+    const store = await db("stores").where({ id: storeId }).first();
+    if (store) {
+      MP_ACCESS_TOKEN_LOCAL = store.mp_access_token;
+      MP_DEVICE_ID_LOCAL = store.mp_device_id;
+      console.log(`✅ [CLEAR-ALL] Usando credenciais da loja ${storeId}`);
+    }
+  }
+
+  // Fallback para credenciais globais
+  if (!MP_ACCESS_TOKEN_LOCAL) {
+    MP_ACCESS_TOKEN_LOCAL = MP_ACCESS_TOKEN;
+    MP_DEVICE_ID_LOCAL = MP_DEVICE_ID;
+  }
+
+  if (!MP_ACCESS_TOKEN_LOCAL || !MP_DEVICE_ID_LOCAL) {
     return res.json({ success: true, cleared: 0 });
   }
 
   try {
     console.log(`🧹 [CLEAR ALL] Limpando TODA a fila da maquininha...`);
 
-    const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+    const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID_LOCAL}/payment-intents`;
     const listResp = await fetch(listUrl, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN_LOCAL}` },
     });
 
     if (!listResp.ok) {
@@ -2582,7 +2641,7 @@ app.post("/api/payment/clear-all", async (req, res) => {
       try {
         const delResp = await fetch(`${listUrl}/${iId}`, {
           method: "DELETE",
-          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN_LOCAL}` },
         });
 
         if (delResp.ok || delResp.status === 404) {
@@ -2614,15 +2673,34 @@ app.post("/api/payment/clear-all", async (req, res) => {
 
 // Configurar Point Smart 2 (modo operacional e vinculação)
 app.post("/api/point/configure", async (req, res) => {
-  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+  const storeId = req.storeId;
+
+  // Busca credenciais da loja
+  let MP_ACCESS_TOKEN_LOCAL, MP_DEVICE_ID_LOCAL;
+  if (storeId) {
+    const store = await db("stores").where({ id: storeId }).first();
+    if (store) {
+      MP_ACCESS_TOKEN_LOCAL = store.mp_access_token;
+      MP_DEVICE_ID_LOCAL = store.mp_device_id;
+      console.log(`✅ [CONFIGURE] Usando credenciais da loja ${storeId}`);
+    }
+  }
+
+  // Fallback para credenciais globais
+  if (!MP_ACCESS_TOKEN_LOCAL) {
+    MP_ACCESS_TOKEN_LOCAL = MP_ACCESS_TOKEN;
+    MP_DEVICE_ID_LOCAL = MP_DEVICE_ID;
+  }
+
+  if (!MP_ACCESS_TOKEN_LOCAL || !MP_DEVICE_ID_LOCAL) {
     return res.json({ success: false, error: "Credenciais não configuradas" });
   }
 
   try {
-    console.log(`⚙️ Configurando Point Smart 2: ${MP_DEVICE_ID}`);
+    console.log(`⚙️ Configurando Point Smart 2: ${MP_DEVICE_ID_LOCAL}`);
 
     // Configuração do dispositivo Point Smart
-    const configUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}`;
+    const configUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID_LOCAL}`;
 
     const configPayload = {
       operating_mode: "PDV", // Modo PDV - integração com frente de caixa
@@ -2632,7 +2710,7 @@ app.post("/api/point/configure", async (req, res) => {
     const response = await fetch(configUrl, {
       method: "PATCH",
       headers: {
-        Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+        Authorization: `Bearer ${MP_ACCESS_TOKEN_LOCAL}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(configPayload),
@@ -2662,10 +2740,31 @@ app.post("/api/point/configure", async (req, res) => {
 
 // Verificar status da Point Smart 2
 app.get("/api/point/status", async (req, res) => {
-  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+  const storeId = req.storeId;
+
+  // Busca credenciais da loja
+  let MP_ACCESS_TOKEN_LOCAL, MP_DEVICE_ID_LOCAL;
+  if (storeId) {
+    const store = await db("stores").where({ id: storeId }).first();
+    if (store) {
+      MP_ACCESS_TOKEN_LOCAL = store.mp_access_token;
+      MP_DEVICE_ID_LOCAL = store.mp_device_id;
+      console.log(`✅ [POINT-STATUS] Usando credenciais da loja ${storeId}`);
+    }
+  }
+
+  // Fallback para credenciais globais
+  if (!MP_ACCESS_TOKEN_LOCAL) {
+    MP_ACCESS_TOKEN_LOCAL = MP_ACCESS_TOKEN;
+    MP_DEVICE_ID_LOCAL = MP_DEVICE_ID;
+  }
+
+  if (!MP_ACCESS_TOKEN_LOCAL || !MP_DEVICE_ID_LOCAL) {
     console.error("⚠️ Status Point: Credenciais não configuradas");
-    console.error(`MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN ? "OK" : "AUSENTE"}`);
-    console.error(`MP_DEVICE_ID: ${MP_DEVICE_ID || "AUSENTE"}`);
+    console.error(
+      `MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN_LOCAL ? "OK" : "AUSENTE"}`
+    );
+    console.error(`MP_DEVICE_ID: ${MP_DEVICE_ID_LOCAL || "AUSENTE"}`);
     return res.json({
       connected: false,
       error: "Credenciais não configuradas",
@@ -2673,11 +2772,11 @@ app.get("/api/point/status", async (req, res) => {
   }
 
   try {
-    console.log(`🔍 Verificando status da Point: ${MP_DEVICE_ID}`);
+    console.log(`🔍 Verificando status da Point: ${MP_DEVICE_ID_LOCAL}`);
 
-    const deviceUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}`;
+    const deviceUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID_LOCAL}`;
     const response = await fetch(deviceUrl, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN_LOCAL}` },
     });
 
     console.log(`📡 Resposta API Point: Status ${response.status}`);
@@ -2710,16 +2809,35 @@ app.get("/api/point/status", async (req, res) => {
 
 // Limpar TODA a fila de pagamentos da maquininha (chamar após pagamento aprovado)
 app.post("/api/payment/clear-queue", async (req, res) => {
-  if (!MP_ACCESS_TOKEN || !MP_DEVICE_ID) {
+  const storeId = req.storeId;
+
+  // Busca credenciais da loja
+  let MP_ACCESS_TOKEN_LOCAL, MP_DEVICE_ID_LOCAL;
+  if (storeId) {
+    const store = await db("stores").where({ id: storeId }).first();
+    if (store) {
+      MP_ACCESS_TOKEN_LOCAL = store.mp_access_token;
+      MP_DEVICE_ID_LOCAL = store.mp_device_id;
+      console.log(`✅ [CLEAR-QUEUE] Usando credenciais da loja ${storeId}`);
+    }
+  }
+
+  // Fallback para credenciais globais
+  if (!MP_ACCESS_TOKEN_LOCAL) {
+    MP_ACCESS_TOKEN_LOCAL = MP_ACCESS_TOKEN;
+    MP_DEVICE_ID_LOCAL = MP_DEVICE_ID;
+  }
+
+  if (!MP_ACCESS_TOKEN_LOCAL || !MP_DEVICE_ID_LOCAL) {
     return res.json({ success: true, cleared: 0 });
   }
 
   try {
     console.log(`🧹 [CLEAR QUEUE] Limpando TODA a fila da Point Pro 2...`);
 
-    const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID}/payment-intents`;
+    const listUrl = `https://api.mercadopago.com/point/integration-api/devices/${MP_DEVICE_ID_LOCAL}/payment-intents`;
     const listResp = await fetch(listUrl, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN_LOCAL}` },
     });
 
     if (!listResp.ok) {
@@ -2740,7 +2858,7 @@ app.post("/api/payment/clear-queue", async (req, res) => {
       try {
         const delResp = await fetch(`${listUrl}/${iId}`, {
           method: "DELETE",
-          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN_LOCAL}` },
         });
 
         if (delResp.ok || delResp.status === 404) {
