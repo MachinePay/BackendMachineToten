@@ -3647,6 +3647,50 @@ app.get("/api/super-admin/dashboard", async (req, res) => {
   }
 });
 
+// 🔧 ENDPOINT TEMPORÁRIO: Atualizar credenciais do sushiman1
+app.post("/api/admin/update-sushiman1-credentials", async (req, res) => {
+  try {
+    console.log("🔧 Atualizando credenciais da loja sushiman1...");
+
+    const newAccessToken =
+      "APP_USR-2380991543282785-120915-186724196695d70b571258710e1f9645-272635919";
+    const newDeviceId = "GERTEC_MP35P__8701012151238699";
+
+    // Atualiza no banco
+    await db("stores").where({ id: "sushiman1" }).update({
+      mp_access_token: newAccessToken,
+      mp_device_id: newDeviceId,
+    });
+
+    // Verifica se foi atualizado
+    const updatedStore = await db("stores").where({ id: "sushiman1" }).first();
+
+    console.log("✅ Credenciais do sushiman1 atualizadas com sucesso!");
+    console.log(
+      `   Access Token: ${updatedStore.mp_access_token.substring(0, 20)}...`
+    );
+    console.log(`   Device ID: ${updatedStore.mp_device_id}`);
+
+    res.json({
+      success: true,
+      message: "Credenciais do sushiman1 atualizadas com sucesso!",
+      store: {
+        id: updatedStore.id,
+        name: updatedStore.name,
+        mp_device_id: updatedStore.mp_device_id,
+        mp_access_token: updatedStore.mp_access_token.substring(0, 20) + "...",
+      },
+    });
+  } catch (error) {
+    console.error("❌ Erro ao atualizar credenciais:", error);
+    res.status(500).json({
+      success: false,
+      error: "Erro ao atualizar credenciais",
+      message: error.message,
+    });
+  }
+});
+
 // --- Inicialização ---
 console.log("🚀 Iniciando servidor...");
 Promise.all([initDatabase(), initRedis()])
