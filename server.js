@@ -1439,8 +1439,11 @@ app.post("/api/notifications/mercadopago", async (req, res) => {
   console.log(`${"=".repeat(60)}\n`);
 
   try {
-    // IPN envia dados via query params
-    const { id, topic } = req.query;
+    // IPN pode vir via query params (?id=X&topic=Y) ou body webhook
+    let id = req.query.id || req.body?.data?.id || req.body?.resource;
+    let topic = req.query.topic || req.body?.type;
+
+    console.log(`🔍 IPN extraído: ID=${id}, Topic=${topic}`);
 
     // Responde rápido ao MP (obrigatório - SEMPRE 200 OK)
     res.status(200).send("OK");
