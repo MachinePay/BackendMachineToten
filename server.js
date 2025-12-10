@@ -549,6 +549,13 @@ const extractStoreId = (req, res, next) => {
     "/api/payment/clear-queue", // Pagamentos: Limpar fila
   ];
 
+  // Extrai storeId SEMPRE (antes de validar qualquer coisa)
+  const storeId = req.headers["x-store-id"] || req.query.storeId;
+  if (storeId) {
+    req.storeId = storeId;
+    console.log(`✅ [MIDDLEWARE] storeId anexado ao request: ${storeId}`);
+  }
+
   // Se for rota pública, pula validação (match EXATO apenas)
   if (publicRoutes.includes(req.path)) {
     console.log(`✅ [MIDDLEWARE] Rota pública, pulando validação`);
@@ -568,10 +575,6 @@ const extractStoreId = (req, res, next) => {
     return next();
   }
 
-  // Extrai storeId do header ou query param
-  const storeId = req.headers["x-store-id"] || req.query.storeId;
-  console.log(`🔍 [MIDDLEWARE] storeId extraído: ${storeId}`);
-
   if (!storeId) {
     console.log(`❌ [MIDDLEWARE] storeId ausente!`);
     return res.status(400).json({
@@ -580,9 +583,6 @@ const extractStoreId = (req, res, next) => {
     });
   }
 
-  // Anexa storeId ao request para uso nos endpoints
-  req.storeId = storeId;
-  console.log(`✅ [MIDDLEWARE] storeId anexado ao request: ${req.storeId}`);
   next();
 };
 
