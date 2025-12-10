@@ -1152,13 +1152,27 @@ app.get(
   authorizeKitchen,
   async (req, res) => {
     try {
-      // 🔒 IMPORTANTE: Só retorna pedidos com status "active" E pagamento confirmado
-      const orders = await db("orders")
+      const storeId = req.storeId;
+
+      // 🔒 IMPORTANTE: Só retorna pedidos com status "active" E pagamento confirmado DA LOJA
+      let query = db("orders")
         .where({ status: "active" })
         .whereIn("paymentStatus", ["paid", "authorized"])
         .orderBy("timestamp", "asc");
 
-      console.log(`🍳 Cozinha: ${orders.length} pedido(s) PAGOS na fila`);
+      // Filtra por loja se storeId estiver presente
+      if (storeId) {
+        query = query.where({ storeId: storeId });
+        console.log(`🍳 Cozinha: Filtrando pedidos da loja ${storeId}`);
+      }
+
+      const orders = await query;
+
+      console.log(
+        `🍳 Cozinha ${storeId || "todas"}: ${
+          orders.length
+        } pedido(s) PAGOS na fila`
+      );
 
       res.json(
         orders.map((o) => ({
@@ -1275,9 +1289,21 @@ app.put("/api/orders/:id", async (req, res) => {
   try {
     console.log(`📝 Atualizando pedido ${id} com payment ${paymentId}...`);
 
-    const order = await db("orders").where({ id }).first();
+    const storeId = req.storeId;
+
+    let query = db("orders").where({ id });
+
+    // Filtra por loja se storeId estiver presente
+    if (storeId) {
+      query = query.where({ storeId: storeId });
+    }
+
+    const order = await query.first();
+
     if (!order) {
-      return res.status(404).json({ error: "Pedido não encontrado" });
+      return res
+        .status(404)
+        .json({ error: "Pedido não encontrado nesta loja" });
     }
 
     const updates = {};
@@ -1343,10 +1369,21 @@ app.delete(
   authorizeKitchen,
   async (req, res) => {
     try {
-      const order = await db("orders").where({ id: req.params.id }).first();
+      const storeId = req.storeId;
+
+      let query = db("orders").where({ id: req.params.id });
+
+      // Filtra por loja se storeId estiver presente
+      if (storeId) {
+        query = query.where({ storeId: storeId });
+      }
+
+      const order = await query.first();
 
       if (!order) {
-        return res.status(404).json({ error: "Pedido não encontrado" });
+        return res
+          .status(404)
+          .json({ error: "Pedido não encontrado nesta loja" });
       }
 
       // Se estava pendente, libera a reserva de estoque
