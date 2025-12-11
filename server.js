@@ -3373,6 +3373,9 @@ app.post("/api/ai/suggestion", async (req, res) => {
         "Você é um vendedor especializado em pastéis e salgados brasileiros. Conheça bem os sabores tradicionais e combinações";
     }
 
+    console.log(`🤖 [IA SUGGESTION] Tipo de loja detectado: ${storeType}`);
+    console.log(`🤖 [IA SUGGESTION] Catálogo enviado para IA:\n${productList}`);
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -3380,24 +3383,33 @@ app.post("/api/ai/suggestion", async (req, res) => {
           role: "system",
           content: `${storeContext} da ${storeName}.
 
-Recomende APENAS produtos que estão no nosso catálogo abaixo. NUNCA invente produtos que não existem na lista.
+⚠️ ATENÇÃO CRÍTICA: Você DEVE recomendar EXCLUSIVAMENTE produtos da lista abaixo. 
+❌ É PROIBIDO mencionar produtos que não estejam nesta lista.
+❌ NÃO invente, NÃO sugira, NÃO mencione produtos de outras lojas.
 
-CATÁLOGO DISPONÍVEL (${storeType}):
+📋 CATÁLOGO COMPLETO DISPONÍVEL (${storeType}):
 ${productList}
 
-REGRAS:
-- Recomende APENAS produtos da lista acima
-- Seja breve e direto (máximo 2-3 produtos)
-- Mencione o nome EXATO do produto
-- Use conhecimento sobre ${storeType} para fazer recomendações relevantes
-- Seja simpático e convincente`,
+🎯 INSTRUÇÕES OBRIGATÓRIAS:
+1. Recomende SOMENTE produtos que aparecem na lista acima
+2. Use o nome EXATO como está escrito na lista
+3. Seja breve (máximo 2-3 produtos)
+4. Se não houver produtos adequados na lista, diga que não tem disponível
+5. NUNCA mencione: pastéis se for restaurante japonês, ou comida japonesa se for pastelaria
+
+Exemplo CORRETO: "Recomendo o [nome exato da lista]"
+Exemplo ERRADO: Sugerir "Temaki" se não estiver na lista acima`,
         },
         { role: "user", content: req.body.prompt },
       ],
       max_tokens: 150,
     });
+
+    const aiResponse = completion.choices[0].message.content;
     console.log(`✅ Resposta OpenAI recebida para ${storeName}!`);
-    res.json({ text: completion.choices[0].message.content });
+    console.log(`🤖 [IA SUGGESTION] Resposta da IA: ${aiResponse}`);
+
+    res.json({ text: aiResponse });
   } catch (e) {
     console.error("❌ ERRO OpenAI:", e.message);
     console.error("Detalhes:", e.response?.data || e);
