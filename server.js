@@ -601,6 +601,7 @@ const extractStoreId = (req, res, next) => {
     "/api/ai/suggestion", // IA: Sugestões de produtos
     "/api/ai/chat", // IA: Chat geral
     "/api/ai/kitchen-priority", // IA: Priorização de pedidos
+    "/api/ai/inventory-analysis", // IA: Análise de estoque (admin)
     "/api/users/check-cpf", // Usuários: Verificar CPF
     "/api/users/register", // Usuários: Cadastro
     "/api/payment/create-pix", // Pagamentos: Criar PIX
@@ -3762,76 +3763,104 @@ Retorne APENAS o JSON, sem texto adicional.`,
 
 // --- ANÁLISE INTELIGENTE DE ESTOQUE E VENDAS (Admin) ---
 
-app.get(
-  "/api/ai/inventory-analysis",
-  authenticateToken,
-  authorizeAdmin,
-  async (req, res) => {
-    if (!openai) {
-      return res.status(503).json({ error: "IA indisponível no momento" });
+app.get("/api/ai/inventory-analysis", async (req, res) => {
+  const storeId = req.storeId; // 🏪 MULTI-TENANT
+
+  console.log(`📊 [INVENTORY-ANALYSIS] Loja: ${storeId}`);
+
+  if (!storeId) {
+    return res.status(400).json({ error: "storeId ausente" });
+  }
+
+  if (!openai) {
+    return res.status(503).json({ error: "IA indisponível no momento" });
+  }
+
+  try {
+    console.log(
+      `🤖 Iniciando análise inteligente de estoque da loja ${storeId}...`
+    );
+
+    // 1. Buscar produtos da loja específica
+    const products = await db("products")
+      .where({ store_id: storeId })
+      .select("*")
+      .orderBy("category");
+
+    // 2. Buscar histórico de pedidos da loja (últimos 30 dias)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const orders = await db("orders")
+      .where({ store_id: storeId })
+      .where("timestamp", ">=", thirtyDaysAgo.toISOString())
+      .select("*");
+
+    // 3. Calcular estatísticas de vendas por produto
+    const salesStats = {};
+    products.forEach((p) => {
+      salesStats[p.id] = {
+        name: p.name,
+        category: p.category,
+        price: parseFloat(p.price),
+        stock: p.stock,
+        totalSold: 0,
+        revenue: 0,
+        orderCount: 0,
+      };
+    });
+
+    // Contar vendas
+    orders.forEach((order) => {
+      const items = parseJSON(order.items);
+      items.forEach((item) => {
+        if (salesStats[item.id]) {
+          salesStats[item.id].totalSold += item.quantity || 1;
+          salesStats[item.id].revenue +=
+            (item.price || 0) * (item.quantity || 1);
+          salesStats[item.id].orderCount += 1;
+        }
+      });
+    });
+
+    // 4. Preparar dados para análise da IA
+    const analysisData = {
+      totalProducts: products.length,
+      totalOrders: orders.length,
+      period: "últimos 30 dias",
+      products: Object.values(salesStats).map((p) => ({
+        name: p.name,
+        category: p.category,
+        price: p.price,
+        stock: p.stock === null ? "ilimitado" : p.stock,
+        totalSold: p.totalSold,
+        revenue: p.revenue.toFixed(2),
+        averagePerOrder:
+          p.orderCount > 0 ? (p.totalSold / p.orderCount).toFixed(1) : 0,
+      })),
+    };
+
+    // Busca informações da loja para personalizar análise
+    const store = await db("stores").where({ id: storeId }).first();
+    const storeName = store?.name || storeId;
+
+    // Determina tipo de negócio
+    let businessType = "estabelecimento de food service";
+    if (
+      storeId.includes("sushi") ||
+      storeName.toLowerCase().includes("sushi")
+    ) {
+      businessType = "restaurante japonês";
+    } else if (
+      storeId.includes("pastel") ||
+      storeName.toLowerCase().includes("pastel")
+    ) {
+      businessType = "pastelaria";
     }
 
-    try {
-      console.log("🤖 Iniciando análise inteligente de estoque...");
-
-      // 1. Buscar todos os produtos com estoque
-      const products = await db("products").select("*").orderBy("category");
-
-      // 2. Buscar histórico de pedidos (últimos 30 dias)
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const orders = await db("orders")
-        .where("timestamp", ">=", thirtyDaysAgo.toISOString())
-        .select("*");
-
-      // 3. Calcular estatísticas de vendas por produto
-      const salesStats = {};
-      products.forEach((p) => {
-        salesStats[p.id] = {
-          name: p.name,
-          category: p.category,
-          price: parseFloat(p.price),
-          stock: p.stock,
-          totalSold: 0,
-          revenue: 0,
-          orderCount: 0,
-        };
-      });
-
-      // Contar vendas
-      orders.forEach((order) => {
-        const items = parseJSON(order.items);
-        items.forEach((item) => {
-          if (salesStats[item.id]) {
-            salesStats[item.id].totalSold += item.quantity || 1;
-            salesStats[item.id].revenue +=
-              (item.price || 0) * (item.quantity || 1);
-            salesStats[item.id].orderCount += 1;
-          }
-        });
-      });
-
-      // 4. Preparar dados para análise da IA
-      const analysisData = {
-        totalProducts: products.length,
-        totalOrders: orders.length,
-        period: "últimos 30 dias",
-        products: Object.values(salesStats).map((p) => ({
-          name: p.name,
-          category: p.category,
-          price: p.price,
-          stock: p.stock === null ? "ilimitado" : p.stock,
-          totalSold: p.totalSold,
-          revenue: p.revenue.toFixed(2),
-          averagePerOrder:
-            p.orderCount > 0 ? (p.totalSold / p.orderCount).toFixed(1) : 0,
-        })),
-      };
-
-      // 5. Prompt estruturado para a IA
-      const prompt = `Você é um consultor de negócios especializado em food service. Analise os dados de uma pastelaria:
-
-📊 DADOS DE VENDAS (${analysisData.period}):
+    // 5. Prompt estruturado para a IA
+    const prompt = `Você é um consultor de negócios especializado em food service. Analise os dados de ${businessType} (${storeName}):📊 DADOS DE VENDAS (${
+      analysisData.period
+    }):
 - Total de produtos no catálogo: ${analysisData.totalProducts}
 - Total de pedidos realizados: ${analysisData.totalOrders}
 
@@ -3862,51 +3891,50 @@ Por favor, forneça uma análise completa e acionável sobre:
 
 Seja direto, prático e use emojis. Priorize ações que o administrador pode tomar HOJE.`;
 
-      console.log("📤 Enviando dados para análise da IA...");
+    console.log("📤 Enviando dados para análise da IA...");
 
-      // 6. Chamar OpenAI
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "Você é um consultor de negócios especializado em análise de vendas e gestão de estoque para restaurantes e food service. Seja prático, direto e focado em ações.",
-          },
-          { role: "user", content: prompt },
-        ],
-        max_tokens: 1500,
-        temperature: 0.7,
-      });
-
-      const analysis = completion.choices[0].message.content;
-
-      console.log("✅ Análise concluída!");
-
-      // 7. Retornar análise + dados brutos
-      res.json({
-        success: true,
-        timestamp: new Date().toISOString(),
-        period: analysisData.period,
-        summary: {
-          totalProducts: analysisData.totalProducts,
-          totalOrders: analysisData.totalOrders,
-          lowStock: products.filter((p) => p.stock !== null && p.stock <= 5)
-            .length,
-          outOfStock: products.filter((p) => p.stock === 0).length,
+    // 6. Chamar OpenAI
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Você é um consultor de negócios especializado em análise de vendas e gestão de estoque para restaurantes e food service. Seja prático, direto e focado em ações.",
         },
-        analysis: analysis,
-        rawData: salesStats, // Para o frontend criar gráficos se quiser
-      });
-    } catch (error) {
-      console.error("❌ Erro na análise de estoque:", error);
-      res.status(500).json({
-        error: "Erro ao processar análise",
-        message: error.message,
-      });
-    }
+        { role: "user", content: prompt },
+      ],
+      max_tokens: 1500,
+      temperature: 0.7,
+    });
+
+    const analysis = completion.choices[0].message.content;
+
+    console.log("✅ Análise concluída!");
+
+    // 7. Retornar análise + dados brutos
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      period: analysisData.period,
+      summary: {
+        totalProducts: analysisData.totalProducts,
+        totalOrders: analysisData.totalOrders,
+        lowStock: products.filter((p) => p.stock !== null && p.stock <= 5)
+          .length,
+        outOfStock: products.filter((p) => p.stock === 0).length,
+      },
+      analysis: analysis,
+      rawData: salesStats, // Para o frontend criar gráficos se quiser
+    });
+  } catch (error) {
+    console.error("❌ Erro na análise de estoque:", error);
+    res.status(500).json({
+      error: "Erro ao processar análise",
+      message: error.message,
+    });
   }
-);
+});
 
 // ========== SUPER ADMIN DASHBOARD (MULTI-TENANCY) ==========
 // Endpoint protegido que ignora filtro de loja e retorna visão global
