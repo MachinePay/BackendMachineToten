@@ -3210,17 +3210,18 @@ app.post("/api/ai/suggestion", async (req, res) => {
     return res.json({ text: "IA indisponível" });
   }
   try {
-    console.log("🤖 Chamando OpenAI para sugestão...");
+    const storeId = req.storeId; // 🏪 MULTI-TENANT
+    console.log(`🤖 [IA SUGGESTION] Loja: ${storeId}`);
 
-    // Busca TODOS os produtos disponíveis no catálogo
-    const products = await db("products").select(
-      "id",
-      "name",
-      "description",
-      "price",
-      "category",
-      "stock"
-    );
+    // Busca informações da loja
+    const store = await db("stores").where({ id: storeId }).first();
+    const storeName = store?.name || storeId;
+
+    // Busca produtos APENAS da loja específica
+    const products = await db("products")
+      .where({ store_id: storeId })
+      .select("id", "name", "description", "price", "category", "stock");
+
     const availableProducts = products.filter(
       (p) => p.stock === null || p.stock > 0
     );
@@ -3236,30 +3237,53 @@ app.post("/api/ai/suggestion", async (req, res) => {
       .join("\n");
 
     console.log(
-      `📋 ${availableProducts.length} produtos disponíveis no catálogo`
+      `📋 ${availableProducts.length} produtos disponíveis na loja ${storeName}`
     );
+
+    // Determina o tipo de estabelecimento baseado no storeId ou nome
+    let storeType = "lanchonete";
+    let storeContext = "Você é um vendedor amigável";
+
+    if (
+      storeId.includes("sushi") ||
+      storeName.toLowerCase().includes("sushi")
+    ) {
+      storeType = "restaurante japonês";
+      storeContext =
+        "Você é um atendente especializado em culinária japonesa. Conheça bem sushi, sashimi, temaki, yakisoba e outros pratos orientais";
+    } else if (
+      storeId.includes("pastel") ||
+      storeName.toLowerCase().includes("pastel")
+    ) {
+      storeType = "pastelaria";
+      storeContext =
+        "Você é um vendedor especializado em pastéis e salgados brasileiros. Conheça bem os sabores tradicionais e combinações";
+    }
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: `Você é um vendedor de uma pastelaria/lanchonete. Recomende APENAS produtos que estão no nosso catálogo abaixo. NUNCA invente produtos que não existem na lista.
+          content: `${storeContext} da ${storeName}.
 
-CATÁLOGO DISPONÍVEL:
+Recomende APENAS produtos que estão no nosso catálogo abaixo. NUNCA invente produtos que não existem na lista.
+
+CATÁLOGO DISPONÍVEL (${storeType}):
 ${productList}
 
 REGRAS:
 - Recomende APENAS produtos da lista acima
 - Seja breve e direto (máximo 2-3 produtos)
 - Mencione o nome EXATO do produto
+- Use conhecimento sobre ${storeType} para fazer recomendações relevantes
 - Seja simpático e convincente`,
         },
         { role: "user", content: req.body.prompt },
       ],
       max_tokens: 150,
     });
-    console.log("✅ Resposta OpenAI recebida!");
+    console.log(`✅ Resposta OpenAI recebida para ${storeName}!`);
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
     console.error("❌ ERRO OpenAI:", e.message);
@@ -3276,16 +3300,47 @@ app.post("/api/ai/chat", async (req, res) => {
     return res.status(503).json({ error: "IA indisponível" });
   }
   try {
-    console.log("🤖 Chamando OpenAI para chat...");
+    const storeId = req.storeId; // 🏪 MULTI-TENANT
+    console.log(`🤖 [IA CHAT] Loja: ${storeId}`);
+
+    // Busca informações da loja
+    const store = await db("stores").where({ id: storeId }).first();
+    const storeName = store?.name || storeId;
+
+    // Busca produtos da loja para contexto
+    const products = await db("products")
+      .where({ store_id: storeId })
+      .select("name", "category", "price")
+      .limit(10);
+
+    const productContext = products
+      .map((p) => `${p.name} (${p.category})`)
+      .join(", ");
+
+    // Determina contexto baseado na loja
+    let systemPrompt = `Você é um atendente amigável da ${storeName}.`;
+
+    if (
+      storeId.includes("sushi") ||
+      storeName.toLowerCase().includes("sushi")
+    ) {
+      systemPrompt = `Você é um atendente especializado em culinária japonesa da ${storeName}. Ajude com dúvidas sobre sushi, sashimi, temaki e outros pratos orientais. Alguns dos nossos produtos: ${productContext}`;
+    } else if (
+      storeId.includes("pastel") ||
+      storeName.toLowerCase().includes("pastel")
+    ) {
+      systemPrompt = `Você é um atendente de pastelaria da ${storeName}. Ajude com dúvidas sobre pastéis, salgados e bebidas. Alguns dos nossos produtos: ${productContext}`;
+    }
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "Atendente." },
+        { role: "system", content: systemPrompt },
         { role: "user", content: req.body.message },
       ],
       max_tokens: 150,
     });
-    console.log("✅ Resposta OpenAI recebida!");
+    console.log(`✅ Resposta OpenAI recebida para ${storeName}!`);
     res.json({ text: completion.choices[0].message.content });
   } catch (e) {
     console.error("❌ ERRO OpenAI:", e.message);
