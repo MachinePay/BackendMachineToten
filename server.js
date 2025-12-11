@@ -3203,6 +3203,12 @@ app.post("/api/payment/clear-queue", async (req, res) => {
 // --- Rotas de IA ---
 
 app.post("/api/ai/suggestion", async (req, res) => {
+  console.log(
+    `🔍 [IA SUGGESTION] Headers recebidos:`,
+    req.headers["x-store-id"]
+  );
+  console.log(`🔍 [IA SUGGESTION] storeId do middleware:`, req.storeId);
+
   if (!openai) {
     console.log(
       "❌ OpenAI não inicializada - OPENAI_API_KEY está configurada?"
@@ -3211,11 +3217,19 @@ app.post("/api/ai/suggestion", async (req, res) => {
   }
   try {
     const storeId = req.storeId; // 🏪 MULTI-TENANT
+
+    if (!storeId) {
+      console.log("⚠️ [IA SUGGESTION] storeId ausente!");
+      return res.json({ text: "Erro: loja não identificada" });
+    }
+
     console.log(`🤖 [IA SUGGESTION] Loja: ${storeId}`);
 
     // Busca informações da loja
     const store = await db("stores").where({ id: storeId }).first();
     const storeName = store?.name || storeId;
+
+    console.log(`🏪 [IA SUGGESTION] Store encontrada:`, storeName);
 
     // Busca produtos APENAS da loja específica
     const products = await db("products")
@@ -3293,6 +3307,9 @@ REGRAS:
 });
 
 app.post("/api/ai/chat", async (req, res) => {
+  console.log(`🔍 [IA CHAT] Headers recebidos:`, req.headers["x-store-id"]);
+  console.log(`🔍 [IA CHAT] storeId do middleware:`, req.storeId);
+
   if (!openai) {
     console.log(
       "❌ OpenAI não inicializada - OPENAI_API_KEY está configurada?"
@@ -3301,6 +3318,12 @@ app.post("/api/ai/chat", async (req, res) => {
   }
   try {
     const storeId = req.storeId; // 🏪 MULTI-TENANT
+
+    if (!storeId) {
+      console.log("⚠️ [IA CHAT] storeId ausente!");
+      return res.json({ text: "Erro: loja não identificada" });
+    }
+
     console.log(`🤖 [IA CHAT] Loja: ${storeId}`);
 
     // Busca informações da loja
