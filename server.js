@@ -3323,6 +3323,18 @@ app.post("/api/ai/suggestion", async (req, res) => {
       .where({ store_id: storeId })
       .select("id", "name", "description", "price", "category", "stock");
 
+    console.log(
+      `🔍 [IA SUGGESTION] Query executada: products WHERE store_id = '${storeId}'`
+    );
+    console.log(
+      `🔍 [IA SUGGESTION] Total de produtos encontrados:`,
+      products.length
+    );
+    console.log(
+      `🔍 [IA SUGGESTION] Produtos:`,
+      products.map((p) => `${p.name} (${p.category})`).join(", ")
+    );
+
     const availableProducts = products.filter(
       (p) => p.stock === null || p.stock > 0
     );
