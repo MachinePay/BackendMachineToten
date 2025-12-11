@@ -350,6 +350,50 @@ async function initDatabase() {
     console.log("ℹ️ [MULTI-TENANCY] Índice já existe:", err.message);
   }
 
+  // Adiciona store_id em users
+  try {
+    await db.raw(
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS store_id VARCHAR(255)"
+    );
+    console.log("✅ [MULTI-TENANCY] Coluna store_id em users (SQL bruto)");
+  } catch (err) {
+    console.log(
+      "ℹ️ [MULTI-TENANCY] Coluna store_id já existe em users:",
+      err.message
+    );
+  }
+
+  try {
+    await db.raw(
+      "CREATE INDEX IF NOT EXISTS users_store_id_index ON users(store_id)"
+    );
+    console.log("✅ [MULTI-TENANCY] Índice criado em users.store_id");
+  } catch (err) {
+    console.log("ℹ️ [MULTI-TENANCY] Índice já existe:", err.message);
+  }
+
+  // Remove constraint UNIQUE do CPF (permitir mesmo CPF em lojas diferentes)
+  try {
+    await db.raw(
+      "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_cpf_unique"
+    );
+    console.log("✅ [MULTI-TENANCY] Constraint UNIQUE removido de users.cpf");
+  } catch (err) {
+    console.log("ℹ️ [MULTI-TENANCY]", err.message);
+  }
+
+  // Cria índice composto único (cpf + store_id)
+  try {
+    await db.raw(
+      "CREATE UNIQUE INDEX IF NOT EXISTS users_cpf_store_unique ON users(cpf, store_id)"
+    );
+    console.log(
+      "✅ [MULTI-TENANCY] Índice único criado em users(cpf, store_id)"
+    );
+  } catch (err) {
+    console.log("ℹ️ [MULTI-TENANCY] Índice já existe:", err.message);
+  }
+
   // ========== MIGRAÇÃO: Atribui store_id padrão para produtos/pedidos existentes ==========
   const productsWithoutStore = await db("products")
     .whereNull("store_id")
@@ -378,6 +422,21 @@ async function initDatabase() {
     await db("orders").whereNull("store_id").update({ store_id: "pastel1" }); // Loja padrão
     console.log(
       `✅ [MIGRAÇÃO] ${ordersWithoutStore.count} pedidos atribuídos à loja 'pastel1'`
+    );
+  }
+
+  const usersWithoutStore = await db("users")
+    .whereNull("store_id")
+    .count("id as count")
+    .first();
+
+  if (Number(usersWithoutStore.count) > 0) {
+    console.log(
+      `🔄 [MIGRAÇÃO] Encontrados ${usersWithoutStore.count} usuários sem store_id`
+    );
+    await db("users").whereNull("store_id").update({ store_id: "pastel1" }); // Loja padrão
+    console.log(
+      `✅ [MIGRAÇÃO] ${usersWithoutStore.count} usuários atribuídos à loja 'pastel1'`
     );
   }
 
@@ -1015,6 +1074,9 @@ app.get("/api/users", authenticateToken, authorizeAdmin, async (req, res) => {
 // ========== PASSO 1: Verificar se CPF existe (NÃO cria usuário) ==========
 app.post("/api/users/check-cpf", async (req, res) => {
   const { cpf } = req.body;
+  const storeId = req.storeId; // 🏪 MULTI-TENANT
+
+  console.log(`🔍 [CHECK-CPF] Loja: ${storeId}, CPF: ${cpf}`);
 
   if (!cpf) {
     return res.status(400).json({ error: "CPF obrigatório" });
@@ -1027,10 +1089,15 @@ app.post("/api/users/check-cpf", async (req, res) => {
   }
 
   try {
-    const user = await db("users").where({ cpf: cpfClean }).first();
+    // Busca usuário APENAS na loja específica
+    const user = await db("users")
+      .where({ cpf: cpfClean, store_id: storeId })
+      .first();
 
     if (user) {
-      console.log(`✅ CPF encontrado: ${user.name} (${cpfClean})`);
+      console.log(
+        `✅ CPF encontrado na loja ${storeId}: ${user.name} (${cpfClean})`
+      );
       return res.json({
         exists: true,
         requiresRegistration: false,
@@ -1041,7 +1108,9 @@ app.post("/api/users/check-cpf", async (req, res) => {
       });
     }
 
-    console.log(`📋 CPF não encontrado: ${cpfClean} - necessário cadastro`);
+    console.log(
+      `📋 CPF não encontrado na loja ${storeId}: ${cpfClean} - necessário cadastro`
+    );
     return res.json({
       exists: false,
       requiresRegistration: true,
@@ -1056,6 +1125,9 @@ app.post("/api/users/check-cpf", async (req, res) => {
 // ========== PASSO 2: Cadastrar novo usuário (APENAS se não existir) ==========
 app.post("/api/users/register", async (req, res) => {
   const { cpf, name } = req.body;
+  const storeId = req.storeId; // 🏪 MULTI-TENANT
+
+  console.log(`📝 [REGISTER] Loja: ${storeId}, Nome: ${name}, CPF: ${cpf}`);
 
   if (!cpf || !name) {
     return res.status(400).json({ error: "CPF e nome são obrigatórios" });
@@ -1068,13 +1140,17 @@ app.post("/api/users/register", async (req, res) => {
   }
 
   try {
-    // Verifica se já existe (segurança extra)
-    const exists = await db("users").where({ cpf: cpfClean }).first();
+    // Verifica se já existe NA LOJA ESPECÍFICA (segurança extra)
+    const exists = await db("users")
+      .where({ cpf: cpfClean, store_id: storeId })
+      .first();
 
     if (exists) {
-      console.log(`⚠️ Tentativa de cadastro duplicado: ${cpfClean}`);
+      console.log(
+        `⚠️ Tentativa de cadastro duplicado na loja ${storeId}: ${cpfClean}`
+      );
       return res.status(409).json({
-        error: "CPF já cadastrado",
+        error: "CPF já cadastrado nesta loja",
         user: {
           ...exists,
           historico: parseJSON(exists.historico),
@@ -1082,21 +1158,26 @@ app.post("/api/users/register", async (req, res) => {
       });
     }
 
-    // Cria novo usuário
-    console.log(`📝 Cadastrando novo usuário: ${name} (${cpfClean})`);
+    // Cria novo usuário NA LOJA ESPECÍFICA
+    console.log(
+      `📝 Cadastrando novo usuário na loja ${storeId}: ${name} (${cpfClean})`
+    );
 
     const newUser = {
       id: `user_${Date.now()}`,
       name: name.trim(),
       email: null,
       cpf: cpfClean,
+      store_id: storeId, // 🏪 Associa à loja
       historico: JSON.stringify([]),
       pontos: 0,
     };
 
     await db("users").insert(newUser);
 
-    console.log(`✅ Usuário cadastrado com sucesso: ${newUser.id}`);
+    console.log(
+      `✅ Usuário cadastrado com sucesso na loja ${storeId}: ${newUser.id}`
+    );
 
     res.status(201).json({
       success: true,
@@ -1255,14 +1336,19 @@ app.post("/api/orders", async (req, res) => {
   );
 
   try {
-    // Garante que o usuário existe (para convidados)
-    const userExists = await db("users").where({ id: userId }).first();
+    // Garante que o usuário existe (para convidados) NA LOJA ESPECÍFICA
+    const userExists = await db("users")
+      .where({ id: userId, store_id: req.storeId })
+      .first();
+
     if (!userExists) {
+      console.log(`👤 Criando usuário ${userId} na loja ${req.storeId}`);
       await db("users").insert({
         id: userId,
         name: userName || "Convidado",
         email: null,
         cpf: null,
+        store_id: req.storeId, // 🏪 Associa à loja
         historico: "[]",
         pontos: 0,
       });
