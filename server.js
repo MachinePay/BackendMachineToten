@@ -3472,6 +3472,23 @@ let kitchenCache = {
 app.get("/api/ai/kitchen-priority", async (req, res) => {
   const storeId = req.storeId; // 🏪 MULTI-TENANT
   console.log(`🍳 [GET /api/ai/kitchen-priority] storeId: ${storeId}`);
+  console.log(
+    `🍳 [GET /api/ai/kitchen-priority] Headers:`,
+    req.headers["x-store-id"]
+  );
+  console.log(
+    `🍳 [GET /api/ai/kitchen-priority] Authorization:`,
+    req.headers["authorization"] ? "Presente" : "Ausente"
+  );
+
+  if (!storeId) {
+    console.log(`⚠️ [KITCHEN-PRIORITY] storeId ausente!`);
+    return res.status(400).json({
+      error: "storeId ausente",
+      orders: [],
+      aiEnabled: false,
+    });
+  }
 
   if (!openai) {
     console.log("❌ OpenAI não inicializada - retornando ordem padrão");
