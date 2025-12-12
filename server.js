@@ -4180,6 +4180,157 @@ app.get("/api/super-admin/dashboard", async (req, res) => {
   }
 });
 
+// 📊 Top 5 Produtos Mais Vendidos de uma Loja
+app.get("/api/super-admin/store/:storeId/top-products", async (req, res) => {
+  try {
+    // Verifica autenticação de Super Admin
+    const superAdminPassword = req.headers["x-super-admin-password"];
+
+    if (!SUPER_ADMIN_PASSWORD) {
+      return res.status(503).json({
+        error: "Super Admin não configurado.",
+      });
+    }
+
+    if (superAdminPassword !== SUPER_ADMIN_PASSWORD) {
+      return res.status(401).json({
+        error: "Acesso negado. Senha de Super Admin inválida.",
+      });
+    }
+
+    const { storeId } = req.params;
+    console.log(`📊 [TOP-PRODUCTS] Buscando top produtos da loja ${storeId}`);
+
+    // Busca todos os pedidos pagos da loja
+    const orders = await db("orders")
+      .where({ store_id: storeId })
+      .whereIn("paymentStatus", ["paid", "authorized"])
+      .select("items");
+
+    // Agrupa vendas por produto
+    const productSales = {};
+
+    orders.forEach((order) => {
+      const items = parseJSON(order.items);
+      items.forEach((item) => {
+        if (!productSales[item.id]) {
+          productSales[item.id] = {
+            name: item.name,
+            sold: 0,
+            revenue: 0,
+          };
+        }
+        productSales[item.id].sold += item.quantity || 1;
+        productSales[item.id].revenue +=
+          (item.price || 0) * (item.quantity || 1);
+      });
+    });
+
+    // Converte para array e ordena por quantidade vendida
+    const topProducts = Object.values(productSales)
+      .sort((a, b) => b.sold - a.sold)
+      .slice(0, 5)
+      .map((p) => ({
+        name: p.name,
+        sold: p.sold,
+        revenue: parseFloat(p.revenue.toFixed(2)),
+      }));
+
+    console.log(`✅ [TOP-PRODUCTS] ${topProducts.length} produtos retornados`);
+
+    res.json(topProducts);
+  } catch (error) {
+    console.error("❌ Erro ao buscar top products:", error);
+    res.status(500).json({
+      error: "Erro ao buscar produtos mais vendidos",
+      message: error.message,
+    });
+  }
+});
+
+// 📈 Histórico de Vendas (Últimos N Dias)
+app.get("/api/super-admin/store/:storeId/sales-history", async (req, res) => {
+  try {
+    // Verifica autenticação de Super Admin
+    const superAdminPassword = req.headers["x-super-admin-password"];
+
+    if (!SUPER_ADMIN_PASSWORD) {
+      return res.status(503).json({
+        error: "Super Admin não configurado.",
+      });
+    }
+
+    if (superAdminPassword !== SUPER_ADMIN_PASSWORD) {
+      return res.status(401).json({
+        error: "Acesso negado. Senha de Super Admin inválida.",
+      });
+    }
+
+    const { storeId } = req.params;
+    const days = parseInt(req.query.days) || 7;
+
+    console.log(
+      `📈 [SALES-HISTORY] Buscando últimos ${days} dias da loja ${storeId}`
+    );
+
+    // Calcula data inicial
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    // Busca pedidos pagos do período
+    const orders = await db("orders")
+      .where({ store_id: storeId })
+      .whereIn("paymentStatus", ["paid", "authorized"])
+      .where("timestamp", ">=", startDate.toISOString())
+      .select("timestamp", "total");
+
+    // Agrupa por dia
+    const salesByDay = {};
+
+    orders.forEach((order) => {
+      const date = new Date(order.timestamp);
+      const dateStr = date.toISOString().split("T")[0]; // YYYY-MM-DD
+
+      if (!salesByDay[dateStr]) {
+        salesByDay[dateStr] = 0;
+      }
+      salesByDay[dateStr] += parseFloat(order.total) || 0;
+    });
+
+    // Converte para array e adiciona nome do dia da semana
+    const dayNames = [
+      "Domingo",
+      "Segunda",
+      "Terça",
+      "Quarta",
+      "Quinta",
+      "Sexta",
+      "Sábado",
+    ];
+
+    const salesHistory = Object.entries(salesByDay)
+      .map(([date, value]) => {
+        const dateObj = new Date(date + "T12:00:00"); // Meio-dia para evitar problemas de timezone
+        return {
+          day: dayNames[dateObj.getDay()],
+          date: date,
+          value: parseFloat(value.toFixed(2)),
+        };
+      })
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    console.log(`✅ [SALES-HISTORY] ${salesHistory.length} dias com vendas`);
+
+    res.json(salesHistory);
+  } catch (error) {
+    console.error("❌ Erro ao buscar sales history:", error);
+    res.status(500).json({
+      error: "Erro ao buscar histórico de vendas",
+      message: error.message,
+    });
+  }
+});
+
 // 🔧 ENDPOINT TEMPORÁRIO: Atualizar credenciais do sushiman1
 app.get("/api/admin/update-sushiman1-credentials", async (req, res) => {
   try {
