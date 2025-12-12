@@ -617,11 +617,6 @@ const extractStoreId = (req, res, next) => {
     "/api/debug/orders", // DEBUG: Ver todos os pedidos
   ];
 
-  // Rotas autenticadas que podem funcionar sem storeId (usarão fallback interno)
-  const authenticatedRoutes = [
-    "/api/orders", // Cozinha: storeId opcional, filtra se presente
-  ];
-
   // Extrai storeId SEMPRE (antes de validar qualquer coisa)
   const storeId = req.headers["x-store-id"] || req.query.storeId;
   if (storeId) {
@@ -632,14 +627,6 @@ const extractStoreId = (req, res, next) => {
   // Se for rota pública, pula validação (match EXATO apenas)
   if (publicRoutes.includes(req.path)) {
     console.log(`✅ [MIDDLEWARE] Rota pública, pulando validação`);
-    return next();
-  }
-
-  // Se for rota autenticada que aceita storeId opcional
-  if (authenticatedRoutes.includes(req.path)) {
-    console.log(
-      `✅ [MIDDLEWARE] Rota autenticada (${req.path}), storeId opcional - PERMITINDO`
-    );
     return next();
   }
 
