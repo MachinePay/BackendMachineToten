@@ -615,6 +615,7 @@ const extractStoreId = (req, res, next) => {
     "/api/payment/create", // Pagamentos: Criar pagamento
     "/api/payment/clear-queue", // Pagamentos: Limpar fila
     "/api/debug/orders", // DEBUG: Ver todos os pedidos
+    "/api/user-orders", // Histórico de pedidos do usuário
   ];
 
   // Extrai storeId SEMPRE (antes de validar qualquer coisa)
@@ -1618,9 +1619,33 @@ app.delete(
 app.get("/api/user-orders", async (req, res) => {
   try {
     const { userId } = req.query;
-    let query = db("orders").orderBy("timestamp", "desc");
-    if (userId) query = query.where({ userId });
+    const storeId = req.storeId;
+
+    console.log(
+      `📋 [GET /api/user-orders] userId: ${userId}, storeId: ${storeId}`
+    );
+
+    if (!storeId) {
+      return res.status(400).json({
+        error: "Store ID obrigatório. Envie via header 'x-store-id'",
+      });
+    }
+
+    // Filtra por loja E por usuário (se fornecido)
+    let query = db("orders")
+      .where({ store_id: storeId })
+      .orderBy("timestamp", "desc");
+
+    if (userId) {
+      query = query.where({ userId });
+    }
+
     const allOrders = await query.select("*");
+
+    console.log(
+      `📋 [GET /api/user-orders] ${allOrders.length} pedidos encontrados na loja ${storeId}`
+    );
+
     res.json(
       allOrders.map((o) => ({
         ...o,
@@ -1629,6 +1654,7 @@ app.get("/api/user-orders", async (req, res) => {
       }))
     );
   } catch (err) {
+    console.error("❌ Erro em /api/user-orders:", err);
     res.status(500).json({ error: "Erro histórico" });
   }
 });
