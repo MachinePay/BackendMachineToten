@@ -584,8 +584,15 @@ app.post("/api/auth/login", (req, res) => {
 // ========== MIDDLEWARE MULTI-TENANCY ==========
 // Extrai e valida o storeId de cada requisição
 const extractStoreId = (req, res, next) => {
-  console.log(`🔍 [MIDDLEWARE] Rota: ${req.method} ${req.path}`);
-  console.log(`🔍 [MIDDLEWARE] Headers:`, JSON.stringify(req.headers, null, 2));
+  const requestPath = req.path;
+  const requestMethod = req.method;
+
+  console.log(`🔍 [MIDDLEWARE] ${requestMethod} ${requestPath}`);
+  console.log(`🔍 [MIDDLEWARE] x-store-id header:`, req.headers["x-store-id"]);
+  console.log(
+    `🔍 [MIDDLEWARE] Authorization header presente:`,
+    !!req.headers["authorization"]
+  );
 
   // Verifica se é uma rota que não precisa de storeId (rotas globais/públicas)
   const publicRoutes = [
@@ -630,7 +637,9 @@ const extractStoreId = (req, res, next) => {
 
   // Se for rota autenticada que aceita storeId opcional
   if (authenticatedRoutes.includes(req.path)) {
-    console.log(`✅ [MIDDLEWARE] Rota autenticada, storeId opcional`);
+    console.log(
+      `✅ [MIDDLEWARE] Rota autenticada (${req.path}), storeId opcional - PERMITINDO`
+    );
     return next();
   }
 
@@ -648,7 +657,8 @@ const extractStoreId = (req, res, next) => {
   }
 
   if (!storeId) {
-    console.log(`❌ [MIDDLEWARE] storeId ausente!`);
+    console.log(`❌ [MIDDLEWARE] storeId ausente para ${req.path}!`);
+    console.log(`❌ [MIDDLEWARE] Esta rota NÃO está nas listas de exceção`);
     return res.status(400).json({
       error:
         "storeId é obrigatório. Envie via header 'x-store-id' ou query param 'storeId'",
@@ -1278,6 +1288,10 @@ app.get(
   authenticateToken,
   authorizeKitchen,
   async (req, res) => {
+    console.log(`🍳 [GET /api/orders] Requisição recebida!`);
+    console.log(`🍳 [GET /api/orders] storeId: ${req.storeId}`);
+    console.log(`🍳 [GET /api/orders] user role: ${req.user?.role}`);
+
     try {
       const storeId = req.storeId;
 
