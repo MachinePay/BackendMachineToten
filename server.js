@@ -1282,17 +1282,26 @@ app.get(
     try {
       const storeId = req.storeId;
 
+      if (!storeId) {
+        console.log(`❌ [GET /api/orders] storeId ausente no endpoint!`);
+        return res.status(400).json({
+          error: "Store ID obrigatório. Envie via header 'x-store-id'",
+          debug: {
+            headers: req.headers,
+            path: req.path,
+          },
+        });
+      }
+
       // 🔒 IMPORTANTE: Só retorna pedidos pagos e ativos (active ou preparing) DA LOJA
       let query = db("orders")
         .whereIn("status", ["active", "preparing"])
         .whereIn("paymentStatus", ["paid", "authorized"])
         .orderBy("timestamp", "asc");
 
-      // Filtra por loja se storeId estiver presente
-      if (storeId) {
-        query = query.where({ store_id: storeId });
-        console.log(`🍳 Cozinha: Filtrando pedidos da loja ${storeId}`);
-      }
+      // Filtra por loja (obrigatório)
+      query = query.where({ store_id: storeId });
+      console.log(`🍳 Cozinha: Filtrando pedidos da loja ${storeId}`);
 
       const orders = await query;
 
