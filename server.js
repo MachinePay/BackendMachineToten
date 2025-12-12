@@ -1617,6 +1617,12 @@ app.delete(
 );
 
 app.get("/api/user-orders", async (req, res) => {
+  console.log(`🔍 [GET /api/user-orders] INÍCIO - Headers:`, {
+    "x-store-id": req.headers["x-store-id"],
+    "storeId-query": req.query.storeId,
+    "req.storeId": req.storeId,
+  });
+
   try {
     const { userId } = req.query;
     const storeId = req.storeId;
@@ -1626,8 +1632,15 @@ app.get("/api/user-orders", async (req, res) => {
     );
 
     if (!storeId) {
+      console.log(`❌ [GET /api/user-orders] storeId ausente!`);
+      console.log(`❌ Headers recebidos:`, req.headers);
       return res.status(400).json({
         error: "Store ID obrigatório. Envie via header 'x-store-id'",
+        debug: {
+          receivedHeaders: Object.keys(req.headers),
+          path: req.path,
+          method: req.method,
+        },
       });
     }
 
