@@ -3818,13 +3818,33 @@ app.get("/api/ai/inventory-analysis", async (req, res) => {
       .select("*")
       .orderBy("category");
 
-    // 2. Buscar histórico de pedidos da loja (últimos 30 dias)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    // 2. Buscar HISTÓRICO COMPLETO de pedidos PAGOS da loja (todas as datas)
+    console.log(
+      `📊 Buscando histórico completo de vendas da loja ${storeId}...`
+    );
+
     const orders = await db("orders")
       .where({ store_id: storeId })
-      .where("timestamp", ">=", thirtyDaysAgo.toISOString())
-      .select("*");
+      .whereIn("paymentStatus", ["paid", "approved"]) // Apenas pedidos pagos
+      .select("*")
+      .orderBy("timestamp", "desc");
+
+    console.log(`📈 Total de pedidos pagos encontrados: ${orders.length}`);
+
+    // Calcular período de análise
+    const oldestOrder =
+      orders.length > 0
+        ? new Date(orders[orders.length - 1].timestamp)
+        : new Date();
+    const newestOrder =
+      orders.length > 0 ? new Date(orders[0].timestamp) : new Date();
+    const daysDiff = Math.ceil(
+      (newestOrder - oldestOrder) / (1000 * 60 * 60 * 24)
+    );
+    const analysisperiod =
+      daysDiff > 0
+        ? `${daysDiff} dias (desde ${oldestOrder.toLocaleDateString("pt-BR")})`
+        : "período completo";
 
     // 3. Calcular estatísticas de vendas por produto
     const salesStats = {};
@@ -3854,10 +3874,19 @@ app.get("/api/ai/inventory-analysis", async (req, res) => {
     });
 
     // 4. Preparar dados para análise da IA
+    const totalRevenue = Object.values(salesStats).reduce(
+      (sum, p) => sum + p.revenue,
+      0
+    );
+    const averageOrderValue =
+      orders.length > 0 ? totalRevenue / orders.length : 0;
+
     const analysisData = {
       totalProducts: products.length,
       totalOrders: orders.length,
-      period: "últimos 30 dias",
+      totalRevenue: totalRevenue.toFixed(2),
+      averageOrderValue: averageOrderValue.toFixed(2),
+      period: analysisperiod,
       products: Object.values(salesStats).map((p) => ({
         name: p.name,
         category: p.category,
@@ -3889,40 +3918,55 @@ app.get("/api/ai/inventory-analysis", async (req, res) => {
     }
 
     // 5. Prompt estruturado para a IA
-    const prompt = `Você é um consultor de negócios especializado em food service. Analise os dados de ${businessType} (${storeName}):📊 DADOS DE VENDAS (${
-      analysisData.period
-    }):
-- Total de produtos no catálogo: ${analysisData.totalProducts}
-- Total de pedidos realizados: ${analysisData.totalOrders}
+    const prompt = `Você é um consultor de negócios especializado em food service. Analise os dados HISTÓRICOS COMPLETOS de vendas de ${businessType} (${storeName}):
 
-PRODUTOS E DESEMPENHO:
+📊 RESUMO FINANCEIRO:
+- Período analisado: ${analysisData.period}
+- Total de produtos no catálogo: ${analysisData.totalProducts}
+- Total de pedidos PAGOS: ${analysisData.totalOrders}
+- Receita total: R$ ${analysisData.totalRevenue}
+- Ticket médio: R$ ${analysisData.averageOrderValue}
+
+📦 DESEMPENHO POR PRODUTO:
 ${analysisData.products
+  .sort((a, b) => parseFloat(b.revenue) - parseFloat(a.revenue)) // Ordena por receita
   .map(
     (p) =>
       `• ${p.name} (${p.category}):
     - Preço: R$ ${p.price}
     - Estoque atual: ${p.stock}
-    - Vendas: ${p.totalSold} unidades
-    - Receita: R$ ${p.revenue}
+    - Total vendido: ${p.totalSold} unidades
+    - Receita gerada: R$ ${p.revenue}
     - Média por pedido: ${p.averagePerOrder}`
   )
   .join("\n")}
 
 Por favor, forneça uma análise completa e acionável sobre:
 
-1. 🚨 ESTOQUE CRÍTICO: Quais produtos precisam URGENTEMENTE de reposição? (estoque baixo ou zerado)
+1. 🏆 TOP 3 PRODUTOS: Quais são os campeões de venda e por que são importantes para o negócio?
 
-2. 📈 PRODUTOS ESTRELA: Quais estão vendendo muito bem e merecem destaque/promoção?
+2. 📈 CRESCIMENTO: Quais produtos/categorias têm potencial de crescer ainda mais?
 
-3. 📉 PRODUTOS EM BAIXA: Quais vendem pouco e podem ser removidos ou reformulados?
+3. 📉 PRODUTOS LENTOS: Quais vendem pouco e devem ser descontinuados ou reformulados?
 
-4. 💡 SUGESTÕES DE NOVOS PRODUTOS: Baseado nas categorias mais vendidas, que novos sabores/produtos você recomendaria adicionar?
+4. 🚨 GESTÃO DE ESTOQUE: Quais produtos precisam de atenção no estoque (reposição ou ajuste)?
+
+5. 💡 NOVOS PRODUTOS: Baseado no histórico, que novos produtos você recomendaria adicionar ao cardápio?
+
+6. 💰 OTIMIZAÇÃO DE RECEITA: Sugestões práticas para aumentar o faturamento (preços, combos, promoções)?
+
+Seja específico, use dados concretos e foque em AÇÕES PRÁTICAS que o admin pode implementar HOJE.
 
 5. 💰 OPORTUNIDADES DE RECEITA: Ajustes de preço ou combos que podem aumentar o faturamento?
 
 Seja direto, prático e use emojis. Priorize ações que o administrador pode tomar HOJE.`;
 
-    console.log("📤 Enviando dados para análise da IA...");
+    console.log(`📤 Enviando dados para análise da IA...`);
+    console.log(
+      `📊 Dados enviados: ${
+        orders.length
+      } pedidos pagos, R$ ${totalRevenue.toFixed(2)} em receita total`
+    );
 
     // 6. Chamar OpenAI
     const completion = await openai.chat.completions.create({
@@ -3941,7 +3985,8 @@ Seja direto, prático e use emojis. Priorize ações que o administrador pode to
 
     const analysis = completion.choices[0].message.content;
 
-    console.log("✅ Análise concluída!");
+    console.log("✅ Análise de histórico completo concluída!");
+    console.log(`📊 Período analisado: ${analysisperiod}`);
 
     // 7. Retornar análise + dados brutos
     res.json({
@@ -3951,6 +3996,8 @@ Seja direto, prático e use emojis. Priorize ações que o administrador pode to
       summary: {
         totalProducts: analysisData.totalProducts,
         totalOrders: analysisData.totalOrders,
+        totalRevenue: analysisData.totalRevenue,
+        averageOrderValue: analysisData.averageOrderValue,
         lowStock: products.filter((p) => p.stock !== null && p.stock <= 5)
           .length,
         outOfStock: products.filter((p) => p.stock === 0).length,
