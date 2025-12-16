@@ -605,7 +605,8 @@ const extractStoreId = (req, res, next) => {
     "/api/super-admin/dashboard", // Super Admin tem acesso global
     "/api/point/configure",
     "/api/point/status",
-    "/api/payment/stone/create", // Stone Pinpad: Criar pagamento
+    "/api/payment/stone/create", // Stone Pinpad: Criar pagamento (dev local)
+    "/api/payment/stone/register", // Stone Pinpad: Registrar transação (produção)
     "/api/payment/stone/cancel", // Stone Pinpad: Cancelar pagamento
     "/api/payment/stone/health", // Stone Pinpad: Health check
     "/api/ai/suggestion", // IA: Sugestões de produtos

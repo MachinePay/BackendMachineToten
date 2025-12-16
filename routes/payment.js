@@ -33,7 +33,10 @@ const router = express.Router();
 // router.post("/clear-queue", resolveStore, paymentController.clearQueue);
 
 // ========== STONE PINPAD (ATIVO) ==========
-// Criar pagamento (crédito/débito)
+// Registrar transação já processada (PRODUÇÃO - frontend chama TEF direto)
+router.post("/stone/register", stoneController.registerStoneTransaction);
+
+// Criar pagamento via backend (DESENVOLVIMENTO - backend local)
 router.post("/stone/create", stoneController.createStonePayment);
 
 // Cancelar transação

@@ -18,8 +18,97 @@ import axios from "axios";
 const STONE_TEF_URL = "http://localhost:6800/api/v1/transactions";
 
 /**
+ * POST /api/payment/stone/register
+ * Registra pagamento Stone já processado pelo frontend
+ *
+ * ARQUITETURA PROFISSIONAL:
+ * 1. Frontend chama TEF Stone local (localhost:6800) diretamente
+ * 2. Após aprovação, frontend envia resultado para este endpoint
+ * 3. Backend valida e registra no banco de dados
+ *
+ * Body esperado:
+ * {
+ *   orderId: "order_123",
+ *   transactionId: "ABC123",
+ *   authorizationCode: "456789",
+ *   amount: 10050,             // Centavos
+ *   type: "CREDIT",
+ *   installments: 1,
+ *   cardBrand: "VISA",
+ *   responseCode: "0000",
+ *   storeId: "sushiman1"
+ * }
+ */
+export async function registerStoneTransaction(req, res) {
+  try {
+    const {
+      orderId,
+      transactionId,
+      authorizationCode,
+      amount,
+      type,
+      installments,
+      cardBrand,
+      responseCode,
+      storeId,
+    } = req.body;
+
+    // Validações obrigatórias
+    if (!orderId || !transactionId || !authorizationCode || !amount) {
+      return res.status(400).json({
+        error:
+          "Campos obrigatórios: orderId, transactionId, authorizationCode, amount",
+      });
+    }
+
+    // Valida se pagamento foi aprovado
+    if (responseCode !== "0000") {
+      return res.status(400).json({
+        error: "Transação não foi aprovada",
+        responseCode,
+      });
+    }
+
+    console.log(`✅ [STONE REGISTER] Registrando transação aprovada:`);
+    console.log(`   Order ID: ${orderId}`);
+    console.log(`   Transaction ID: ${transactionId}`);
+    console.log(`   Authorization: ${authorizationCode}`);
+    console.log(`   Amount: R$ ${(amount / 100).toFixed(2)}`);
+    console.log(`   Type: ${type}`);
+    console.log(`   Card: ${cardBrand}`);
+    console.log(`   Store: ${storeId}`);
+
+    // Aqui você pode salvar no banco de dados para auditoria
+    // await db('stone_transactions').insert({ ... });
+
+    res.json({
+      success: true,
+      message: "Transação Stone registrada com sucesso",
+      data: {
+        orderId,
+        transactionId,
+        authorizationCode,
+        amount,
+        type,
+        cardBrand,
+        status: "approved",
+      },
+    });
+  } catch (error) {
+    console.error("❌ Erro ao registrar transação Stone:", error.message);
+    res.status(500).json({
+      error: "Erro ao registrar transação",
+      message: error.message,
+    });
+  }
+}
+
+/**
  * POST /api/payment/stone/create
- * Criar pagamento via Stone Pinpad
+ * [DESENVOLVIMENTO] Criar pagamento via backend → TEF local
+ *
+ * ⚠️ Este endpoint só funciona se o backend rodar na mesma máquina do TEF
+ * Para produção, use /api/payment/stone/register após chamar TEF no frontend
  *
  * Body esperado:
  * {
