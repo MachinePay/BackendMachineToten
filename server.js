@@ -605,6 +605,9 @@ const extractStoreId = (req, res, next) => {
     "/api/super-admin/dashboard", // Super Admin tem acesso global
     "/api/point/configure",
     "/api/point/status",
+    "/api/payment/stone/create", // Stone Pinpad: Criar pagamento
+    "/api/payment/stone/cancel", // Stone Pinpad: Cancelar pagamento
+    "/api/payment/stone/health", // Stone Pinpad: Health check
     "/api/ai/suggestion", // IA: Sugestões de produtos
     "/api/ai/chat", // IA: Chat geral
     "/api/ai/kitchen-priority", // IA: Priorização de pedidos
@@ -636,6 +639,7 @@ const extractStoreId = (req, res, next) => {
     /^\/api\/payment\/status\/.+$/, // /api/payment/status/:paymentId
     /^\/api\/payment\/status-pix\/.+$/, // /api/payment/status-pix/:orderId
     /^\/api\/payment\/cancel\/.+$/, // /api/payment/cancel/:paymentId
+    /^\/api\/payment\/stone\/status\/.+$/, // Stone: /api/payment/stone/status/:transactionId
     /^\/api\/users\/cpf\/.+$/, // /api/users/cpf/:cpf
     /^\/api\/super-admin\/store\/.+\/top-products$/, // Super Admin: Top produtos
     /^\/api\/super-admin\/store\/.+\/sales-history$/, // Super Admin: Histórico vendas
@@ -661,6 +665,9 @@ const extractStoreId = (req, res, next) => {
 // ========== APLICA MIDDLEWARE MULTI-TENANCY ==========
 // IMPORTANTE: Deve vir ANTES de todas as rotas da API
 app.use(extractStoreId);
+
+// ========== MONTA ROTAS DE PAGAMENTO ==========
+app.use("/api/payment", paymentRoutes);
 
 // --- Rotas da API (Menu, Usuários, Pedidos) ---
 
