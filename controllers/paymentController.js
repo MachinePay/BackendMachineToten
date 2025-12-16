@@ -1,3 +1,12 @@
+// ===================================================
+// MERCADO PAGO - CONTROLLER DE PAGAMENTOS (DESATIVADO)
+// ===================================================
+// Este arquivo contém a implementação original de pagamentos
+// via Mercado Pago (PIX e maquininha Point).
+// TODO O CÓDIGO ESTÁ COMENTADO mas preservado para referência.
+// ===================================================
+
+/*
 import * as paymentService from "../services/paymentService.js";
 
 /**
@@ -5,7 +14,7 @@ import * as paymentService from "../services/paymentService.js";
  * @param {Request} req - Request do Express
  * @returns {Object} storeConfig - { id, name, mp_access_token, mp_device_id }
  * @throws {Error} Se store não configurada
- */
+ */ /*
 function getStoreConfig(req) {
   if (!req.store) {
     throw new Error("Loja não identificada. Envie o header x-store-id");
@@ -25,7 +34,7 @@ function getStoreConfig(req) {
 /**
  * POST /api/payment/create-pix
  * Criar pagamento PIX (QR Code)
- */
+ */ /*
 export async function createPix(req, res) {
   try {
     const storeConfig = getStoreConfig(req);
@@ -52,7 +61,7 @@ export async function createPix(req, res) {
 /**
  * POST /api/payment/create
  * Criar pagamento com cartão via Point
- */
+ */ /*
 export async function createCard(req, res) {
   try {
     const storeConfig = getStoreConfig(req);
@@ -85,7 +94,7 @@ export async function createCard(req, res) {
 /**
  * GET /api/payment/status/:paymentId
  * Verificar status de pagamento
- */
+ */ /*
 export async function checkStatus(req, res) {
   try {
     const storeConfig = getStoreConfig(req);
@@ -112,7 +121,7 @@ export async function checkStatus(req, res) {
 /**
  * DELETE /api/payment/cancel/:paymentId
  * Cancelar pagamento
- */
+ */ /*
 export async function cancel(req, res) {
   try {
     const storeConfig = getStoreConfig(req);
@@ -136,7 +145,7 @@ export async function cancel(req, res) {
 /**
  * POST /api/payment/point/configure
  * Configurar Point em modo PDV
- */
+ */ /*
 export async function configurePoint(req, res) {
   try {
     const storeConfig = getStoreConfig(req);
@@ -161,7 +170,7 @@ export async function configurePoint(req, res) {
 /**
  * GET /api/payment/point/status
  * Obter status da Point
- */
+ */ /*
 export async function getPointStatus(req, res) {
   try {
     const storeConfig = getStoreConfig(req);
@@ -186,7 +195,7 @@ export async function getPointStatus(req, res) {
 /**
  * POST /api/payment/clear-queue
  * Limpar fila de pagamentos pendentes
- */
+ */ /*
 export async function clearQueue(req, res) {
   try {
     const storeConfig = getStoreConfig(req);
@@ -207,3 +216,8 @@ export async function clearQueue(req, res) {
       .json({ error: error.message || "Erro ao limpar fila" });
   }
 }
+*/
+
+// ===================================================
+// FIM DO CÓDIGO MERCADO PAGO (COMENTADO)
+// ===================================================
